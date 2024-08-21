@@ -157,81 +157,83 @@ public:
             switch (regs_.rip_) {
                 case 0x00007FF750717456: {
                     // scanf
-                    PrintRegs();
 
-                    // read rcx, rdx ( 2 params for x64 call)
+                    // read [rcx] ( scanf format )
                     char str[3];
                     CHECK_ERR(uc_mem_read(uc_, regs_.rcx_, str, 3));
                     std::println("scanf format = {}", str);
 
-                    // write rdx ( emulation scanf input )
+                    // write [rdx] ( emulated scanf input )
                     CHECK_ERR(uc_mem_write(uc_, regs_.rdx_, "123", 3));
 
+                    // set return address
                     regs_.rip_ = 0x00007FF7507BA4B1;
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RIP, &regs_.rip_));
 
+                    // pop the useless, [rsp] = scanf.addr, [rsp+8] = return.addr
                     regs_.rsp_ += 8 * 2;
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RSP, &regs_.rsp_));
 
-                    PrintRegs();
-                    PrintStack(regs_.rsp_);
                     std::println("call scanf!");
                     break;
                 }
                 case 0x00007FF7506BD4B6: {
                     // strcmp
-                    PrintRegs();
 
+                    // read [rcx], [rdx] ( strings to compare )
                     char rcx_value[20];
                     CHECK_ERR(uc_mem_read(uc_, regs_.rcx_, rcx_value, 20));
                     char rdx_value[20];
                     CHECK_ERR(uc_mem_read(uc_, regs_.rdx_, rdx_value, 20));
 
+                    // set result
                     regs_.rax_ = 1; // always fail!
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RAX, &regs_.rax_));
 
+                    // set return address
                     regs_.rip_ = 0x00007FF7507BA4BC;
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RIP, &regs_.rip_));
 
+                    // pop the useless, [rsp] = strcmp.addr, [rsp+8] = return.addr
                     regs_.rsp_ += 8 * 2;
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RSP, &regs_.rsp_));
 
-                    PrintRegs();
-                    PrintStack(regs_.rsp_);
                     std::println("call strcmp!, value1={}, value2={}", rcx_value, rdx_value);
                     break;
                 }
                 case 0x00007FF75075C7B2: {
                     // printf
-                    PrintRegs();
 
+                    // read [rcx] ( get printf format or content )
                     char rcx_value[20];
                     CHECK_ERR(uc_mem_read(uc_, regs_.rcx_, rcx_value, 20));
 
+                    // set return address
                     regs_.rip_ = 0x00007FF7507BA4D2;
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RIP, &regs_.rip_));
 
-                    regs_.rsp_ += 8 * 1;
+                    // pop the useless, [rsp] = printf.addr, [rsp+8] = return.addr
+                    regs_.rsp_ += 8 * 2;
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RSP, &regs_.rsp_));
 
-                    // 00007FF7507BA4D2
                     std::println("call printf!, show={}", rcx_value);
                     break;
                 }
-                case 0x00007FF7507A431D:{
+                case 0x00007FF7507A431D: {
                     // printf
-                    PrintRegs();
 
+                    // read [rcx] ( get printf format or content )
                     char rcx_value[20];
                     CHECK_ERR(uc_mem_read(uc_, regs_.rcx_, rcx_value, 20));
 
+                    // set return address
                     regs_.rip_ = 0x00007FF7507BA4C7;
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RIP, &regs_.rip_));
 
-                    regs_.rsp_ += 8 * 1;
+                    // pop the useless, [rsp] = printf.addr, [rsp+8] = return.addr
+                    regs_.rsp_ += 8 * 2;
                     CHECK_ERR(uc_reg_write(uc_, UC_X86_REG_RSP, &regs_.rsp_));
 
-                    // 00007FF7507BA4D2
                     std::println("call printf!, show={}", rcx_value);
                     break;
                 }
