@@ -9,7 +9,7 @@
 #include <unicorn/unicorn.h>
 #include <Zydis/Zydis.h>
 
-#include "def.h"
+#include "../Utils/def.h"
 
 #if ARCHITECTURE == ARCHITECTURE_X64
 #define INIT_RAX 			0x0000000000000001
@@ -45,24 +45,12 @@
 
 SEG_MAP segs[] = {
     //base			size			file name
-    { 0x00007FF7506B5000, 0x0000000000003000, "v1_testexec.vmp_00007FF7506B5000.bin" },
-    { 0x00007FF7506B8000, 0x0000000000001000, "v1_testexec.vmp_00007FF7506B8000.bin" },
-    { 0x00007FF7506B9000, 0x0000000000001000, "v1_testexec.vmp_00007FF7506B9000.bin" },
-    { 0x00007FF7506BA000, 0x0000000000101000, "v1_testexec.vmp_00007FF7506BA000.bin" },
-    { 0x00000024C1DFA000, 0x0000000000006000, "v1_testexec.vmp_00000024C1DFA000.bin" },
+    { 0x00007FF7506B5000, 0x0000000000003000, "../../Utils/v1_testexec.vmp_00007FF7506B5000.bin" },
+    { 0x00007FF7506B8000, 0x0000000000001000, "../../Utils/v1_testexec.vmp_00007FF7506B8000.bin" },
+    { 0x00007FF7506B9000, 0x0000000000001000, "../../Utils/v1_testexec.vmp_00007FF7506B9000.bin" },
+    { 0x00007FF7506BA000, 0x0000000000101000, "../../Utils/v1_testexec.vmp_00007FF7506BA000.bin" },
+    { 0x00000024C1DFA000, 0x0000000000006000, "../../Utils/v1_testexec.vmp_00000024C1DFA000.bin" },
 };
-
-
-std::string ReadFileBinary(std::string_view FileName) {
-    std::fstream fs { FileName.data(), std::ios::in | std::ios::binary };
-    fs.seekg(0, std::ios::end);
-    const auto length = fs.tellg();
-    fs.seekg(0, std::ios::beg);
-
-    std::string buf(length, '\0');
-    fs.read(&buf[0], length);
-    return buf;
-}
 
 class X64Emulator {
 public:

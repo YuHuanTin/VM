@@ -11,5 +11,9 @@
   }, {
     "name" : "pkgconf",
     "version>=" : "2.2.0"
+  },
+    {
+      "name": "nameof",
+      "version>=": "0.10.4"
   } ]
 }

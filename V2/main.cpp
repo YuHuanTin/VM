@@ -1,5 +1,3 @@
-
-
 #include <print>
 #include <span>
 #include <unicorn/unicorn.h>
@@ -28,14 +26,14 @@
 
 SEG_MAP segs[] = {
     //base			size			file name
-    { 0x00007FF7506B5000, 0x0000000000003000, "v1_testexec.vmp_00007FF7506B5000.bin" },
-    { 0x00007FF7506B8000, 0x0000000000001000, "v1_testexec.vmp_00007FF7506B8000.bin" },
-    { 0x00007FF7506B9000, 0x0000000000001000, "v1_testexec.vmp_00007FF7506B9000.bin" },
-    { 0x00007FF7506BA000, 0x0000000000101000, "v1_testexec.vmp_00007FF7506BA000.bin" },
-    { 0x00000024C1DFA000, 0x0000000000006000, "v1_testexec.vmp_00000024C1DFA000.bin" },
+    { 0x00007FF7506B5000, 0x0000000000003000, "../../Utils/v1_testexec.vmp_00007FF7506B5000.bin" },
+    { 0x00007FF7506B8000, 0x0000000000001000, "../../Utils/v1_testexec.vmp_00007FF7506B8000.bin" },
+    { 0x00007FF7506B9000, 0x0000000000001000, "../../Utils/v1_testexec.vmp_00007FF7506B9000.bin" },
+    { 0x00007FF7506BA000, 0x0000000000101000, "../../Utils/v1_testexec.vmp_00007FF7506BA000.bin" },
+    { 0x00000024C1DFA000, 0x0000000000006000, "../../Utils/v1_testexec.vmp_00000024C1DFA000.bin" },
 };
 
-void doAnalyze(X64Emulator *Emulator) {
+void doAnalyze(const X64Emulator *Emulator) {
     auto    currentRip = Emulator->regs_.rip_;
     uint8_t code[32];
     CHECK_ERR(uc_mem_read(Emulator->uc_, currentRip, code, 32));
@@ -45,11 +43,11 @@ void doAnalyze(X64Emulator *Emulator) {
         throw std::runtime_error(std::format("Failed on ZyanDisassembleIntel with error returned: {}", currentRip));
     }
 
-    auto isJcc = [](ZydisDisassembledInstruction &insn) {
-        const auto total   = insn.info.operand_count;
-        const auto visible = insn.info.operand_count_visible;
+    auto isJcc = [](ZydisDisassembledInstruction &Insn) {
+        const auto total   = Insn.info.operand_count;
+        const auto visible = Insn.info.operand_count_visible;
         for (int i = visible; i < total; i++) {
-            if (insn.operands[i].reg.value == ZYDIS_REGISTER_RFLAGS) {
+            if (Insn.operands[i].reg.value == ZYDIS_REGISTER_RFLAGS) {
                 return true;
             }
         }
