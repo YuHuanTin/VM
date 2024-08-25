@@ -5,12 +5,12 @@
 #ifndef EMULATOR_H
 #define EMULATOR_H
 
+#include <filesystem>
 #include <functional>
 
 #include "def.h"
 
 class X64Emulator {
-private:
     int reg_batch_[18] = {
         UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
         UC_X86_REG_RBP, UC_X86_REG_RSP, UC_X86_REG_RSI, UC_X86_REG_RDI,
@@ -29,6 +29,20 @@ private:
     // 保留 0 作为所有代码的观察者
     std::unordered_map<uint64_t, std::function<void(X64Emulator *)> > observers_;
 
+    /**
+     * 写入所有寄存器的值，从 regs_
+     */
+    void WriteRegs() {
+        CHECK_ERR(uc_reg_write_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
+    }
+
+    /**
+     * 读取所有寄存器的值，写到 regs_
+     */
+    void ReadRegs() {
+        CHECK_ERR(uc_reg_read_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
+    }
+
 public:
     uc_engine *uc_ { nullptr };
     REGS       regs_;
@@ -44,6 +58,38 @@ public:
             ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LONG_64, Emu->regs_.rip_, code, 32, &insn);
             std::println("{}", insn.text);
         });
+
+        WriteRegs();
+    }
+
+    void LoadSegments(const std::string_view dumpFilesDirectory) {
+        const std::filesystem::path directory(dumpFilesDirectory);
+        if (!std::filesystem::exists(directory)) {
+            std::println("Dump files directory not exists");
+            return;
+        }
+
+        for (const auto &entry: std::filesystem::directory_iterator(directory)) {
+            auto fileNamePath = entry.path().filename();
+            auto fileNameStr  = fileNamePath.string();
+            if (fileNamePath.extension() != ".bin" || !fileNameStr.starts_with("ba") || 2 + 16 != fileNameStr.find("si")) {
+                continue;
+            }
+
+            const auto dumpBase = std::stoull(fileNameStr.substr(2, 16), nullptr, 16);
+            const auto dumpSize = std::stoull(fileNameStr.substr(2 + 16 + 2, 16), nullptr, 16);
+
+            auto buffer = ReadFileBinary(entry.path().string());
+            assert(buffer.size() == dumpSize && "Segment size mismatch?");
+
+            // map memory for this emulation
+            CHECK_ERR(uc_mem_map(uc_, dumpBase, dumpSize, UC_PROT_ALL));
+
+            // write machine code to be emulated to memory
+            CHECK_ERR(uc_mem_write(uc_, dumpBase, buffer.data(), dumpSize));
+
+            std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", dumpBase, dumpBase + dumpSize, fileNameStr);
+        }
     }
 
     void LoadSegments(std::span<SEG_MAP> Segs) {
@@ -60,14 +106,6 @@ public:
 
             std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", base_, base_ + size_, file_name_);
         }
-    }
-
-    void WriteRegs() {
-        CHECK_ERR(uc_reg_write_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
-    }
-
-    void ReadRegs() {
-        CHECK_ERR(uc_reg_read_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
     }
 
     void PrintRegs() {
@@ -102,9 +140,16 @@ public:
         for (;;) {
             count++;
 
-            if (observers_.contains(regs_.rip_))
+            if (observers_.contains(regs_.rip_)) {
+                ReadRegs();
                 observers_.at(regs_.rip_)(this);
-            observers_[0](this);
+                WriteRegs();
+            }
+            if (observers_.contains(0)) {
+                ReadRegs();
+                observers_[0](this);
+                WriteRegs();
+            }
 
             if (const auto err = uc_emu_start(uc_, regs_.rip_, 0xffffffffffffffff, 0, 1);
                 err != UC_ERR_OK) {
@@ -114,7 +159,8 @@ public:
                 PrintStack(regs_.rsp_);
                 throw std::runtime_error("error!");
             }
-            ReadRegs();
+
+            CHECK_ERR(uc_reg_read(uc_, UC_X86_REG_RIP, &regs_.rip_));
         }
     }
 };
