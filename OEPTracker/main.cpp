@@ -16,7 +16,7 @@
 
 
 #define PROCESS_ID          14248
-#define DUMP_FILE_DIR       "../../EmulatorLoad/DumpFile"
+#define DUMP_FILE_DIR       "../../OEPTracker/DumpFile"
 #define DUMP_BEGIN          0x000000007FFE0000
 #define DUMP_END            0x00007FFF31432000
 #define REGISTER_PARSER_STR R"(
