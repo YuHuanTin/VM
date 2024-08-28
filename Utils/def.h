@@ -37,6 +37,17 @@ struct SEG_MAP {
     std::string_view file_name_;
 };
 
+struct SEG_MAP_MEM {
+#if ARCHITECTURE == ARCHITECTURE_X64
+    uint64_t base_;
+    uint64_t size_;
+#elif ARCHITECTURE == ARCHITECTURE_X86
+    uint32_t         base_;
+    uint32_t         size_;
+#endif
+    std::string buffer_;
+};
+
 struct REGS {
 #if ARCHITECTURE == ARCHITECTURE_X64
     uint64_t rax_;

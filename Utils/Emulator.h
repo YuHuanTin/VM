@@ -29,9 +29,15 @@ class X64Emulator {
     // 保留 0 作为所有代码的观察者
     std::unordered_map<uint64_t, std::function<void(X64Emulator *)> > observers_;
 
+public:
+    uc_engine *uc_ { nullptr };
+    REGS       regs_;
+    bool       optional_AutoAutoSyncRegs_;
+    bool       optional_DetailOutput_;
+
     /**
      * 写入所有寄存器的值，从 regs_
-     */
+    */
     void WriteRegs() {
         CHECK_ERR(uc_reg_write_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
     }
@@ -43,27 +49,29 @@ class X64Emulator {
         CHECK_ERR(uc_reg_read_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
     }
 
-public:
-    uc_engine *uc_ { nullptr };
-    REGS       regs_;
-
-    explicit X64Emulator(const REGS &Regs) : regs_(Regs) {
-        std::println("Emulate AMD64 machine code");
+    explicit X64Emulator(const REGS &Regs, const bool AutoSyncRegs = true, const bool RegisterInstructionOutput = true, const bool DetailOutput = true)
+        : regs_(Regs), optional_AutoAutoSyncRegs_(AutoSyncRegs), optional_DetailOutput_(DetailOutput) {
         CHECK_ERR(uc_open(UC_ARCH_X86, UC_MODE_64, &uc_));
 
-        RegisterObserver(0, [](const X64Emulator *Emu) {
-            uint8_t code[32];
-            CHECK_ERR(uc_mem_read(Emu->uc_, Emu->regs_.rip_, code, 32));
-            ZydisDisassembledInstruction insn;
-            ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LONG_64, Emu->regs_.rip_, code, 32, &insn);
-            std::println("{}", insn.text);
-        });
+        if (optional_DetailOutput_) {
+            std::println("Emulate AMD64 machine code");
+        }
+
+        if (RegisterInstructionOutput) {
+            RegisterObserver(0, [](const X64Emulator *Emu) {
+                uint8_t code[32];
+                CHECK_ERR(uc_mem_read(Emu->uc_, Emu->regs_.rip_, code, 32));
+                ZydisDisassembledInstruction insn;
+                ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LONG_64, Emu->regs_.rip_, code, 32, &insn);
+                std::println("[0x{:016X}], {}", insn.runtime_address, insn.text);
+            });
+        }
 
         WriteRegs();
     }
 
-    void LoadSegments(const std::string_view dumpFilesDirectory) {
-        const std::filesystem::path directory(dumpFilesDirectory);
+    void LoadSegments(const std::string_view DumpFilesDirectory) {
+        const std::filesystem::path directory(DumpFilesDirectory);
         if (!std::filesystem::exists(directory)) {
             std::println("Dump files directory not exists");
             return;
@@ -88,7 +96,8 @@ public:
             // write machine code to be emulated to memory
             CHECK_ERR(uc_mem_write(uc_, dumpBase, buffer.data(), dumpSize));
 
-            std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", dumpBase, dumpBase + dumpSize, fileNameStr);
+            if (optional_DetailOutput_)
+                std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", dumpBase, dumpBase + dumpSize, fileNameStr);
         }
     }
 
@@ -104,7 +113,24 @@ public:
             // write machine code to be emulated to memory
             CHECK_ERR(uc_mem_write(uc_, base_, buffer.data(), size_));
 
-            std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", base_, base_ + size_, file_name_);
+            if (optional_DetailOutput_)
+                std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", base_, base_ + size_, file_name_);
+        }
+    }
+
+    void LoadSegments(std::span<SEG_MAP_MEM> Segs) {
+        // map memory for this emulation
+        for (auto [base_, size_, buffer]: Segs) {
+            assert(buffer.size() == size_ && "Segment size mismatch?");
+
+            // map memory for this emulation
+            CHECK_ERR(uc_mem_map(uc_, base_, size_, UC_PROT_ALL));
+
+            // write machine code to be emulated to memory
+            CHECK_ERR(uc_mem_write(uc_, base_, buffer.data(), size_));
+
+            if (optional_DetailOutput_)
+                std::println("Segment [0x{:x}, 0x{:x}]", base_, base_ + size_);
         }
     }
 
@@ -135,20 +161,21 @@ public:
         observers_[ObserverAddress] = Observer;
     }
 
-    void Run() {
-        int count = 0;
-        for (;;) {
-            count++;
-
+    void Run(const uint64_t Until = 0xFFFFFFFFFFFFFFFF) {
+        for (; regs_.rip_ != Until;) {
             if (observers_.contains(regs_.rip_)) {
-                ReadRegs();
+                if (optional_AutoAutoSyncRegs_)
+                    ReadRegs();
                 observers_.at(regs_.rip_)(this);
-                WriteRegs();
+                if (optional_AutoAutoSyncRegs_)
+                    WriteRegs();
             }
             if (observers_.contains(0)) {
-                ReadRegs();
+                if (optional_AutoAutoSyncRegs_)
+                    ReadRegs();
                 observers_[0](this);
-                WriteRegs();
+                if (optional_AutoAutoSyncRegs_)
+                    WriteRegs();
             }
 
             if (const auto err = uc_emu_start(uc_, regs_.rip_, 0xffffffffffffffff, 0, 1);
@@ -162,6 +189,11 @@ public:
 
             CHECK_ERR(uc_reg_read(uc_, UC_X86_REG_RIP, &regs_.rip_));
         }
+        ReadRegs();
+    }
+
+    ~X64Emulator() {
+        uc_close(uc_);
     }
 };
 
