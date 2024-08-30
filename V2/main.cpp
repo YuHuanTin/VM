@@ -33,7 +33,7 @@ SEG_MAP segs[] = {
     { 0x00000024C1DFA000, 0x0000000000006000, "../../Utils/v1_testexec.vmp_00000024C1DFA000.bin" },
 };
 
-void doAnalyze(const X64Emulator *Emulator) {
+void DoAnalyze(const X64Emulator *Emulator) {
     auto    currentRip = Emulator->regs_.rip_;
     uint8_t code[32];
     CHECK_ERR(uc_mem_read(Emulator->uc_, currentRip, code, 32));
@@ -82,8 +82,7 @@ int main(int argc, char **argv, char **envp) {
         }
     };
     emulator.LoadSegments(segs);
-    emulator.WriteRegs();
-    emulator.RegisterObserver(0, doAnalyze);
+    emulator.RegisterObserver(0, DoAnalyze);
     emulator.Run();
 
 

@@ -3,8 +3,8 @@
 //
 
 #define NAMEOF_ENUM_RANGE_MAX ZYDIS_REGISTER_MAX_VALUE
-#define CLEANUP_DETAILS 0
 #include <algorithm>
+#include <map>
 #include <print>
 #include <ranges>
 #include <span>
@@ -12,25 +12,53 @@
 #include <Zydis/Zydis.h>
 
 #include "../Utils/Emulator.h"
+#include "../Utils/RapidRegisterStringParser.h"
 
-#define INIT_RAX 			0x0000000000000001
-#define INIT_RBX			0x0000000000000000
-#define INIT_RCX			0x0000000000000001
-#define INIT_RDX			0x000001453D945F80
-#define INIT_RBP			0x0000000000000000
-#define INIT_RSP			0x00000024C1DFFA18
-#define INIT_RSI			0x0000000000000000
-#define INIT_RDI			0x0000000000000000
-#define INIT_R8 			0x000001453D94AD00
-#define INIT_R9 			0x00000024C1DFF918
-#define INIT_R10			0x0000000000000012
-#define INIT_R11			0x00000024C1DFF9C0
-#define INIT_R12			0x0000000000000000
-#define INIT_R13			0x0000000000000000
-#define INIT_R14			0x0000000000000000
-#define INIT_R15			0x0000000000000000
-#define INIT_RIP			0x00007FF7507BA4A5
-#define INIT_RFL			0x0000000000000204      // WARNING: NEVER SET 'TF' = 1
+
+#define REGISTER_PARSER_STR R"(
+RAX : 0000000000000001
+RBX : 0000000000000000
+RCX : 0000000000000001
+RDX : 0000016A1F057140
+RBP : 0000000000000000
+RSP : 00000001000FF848
+RSI : 0000000000000000
+RDI : 0000000000000000
+R8  : 0000016A1F05AB20
+R9  : 00000001000FF748
+R10 : 0000000000000012
+R11 : 00000001000FF7F0
+R12 : 0000000000000000
+R13 : 0000000000000000
+R14 : 0000000000000000
+R15 : 0000000000000000
+RIP : 00007FF7D166A4A5
+RFLAGS : 0000000000000204
+ZF : 0
+OF : 0
+CF : 0
+PF : 1
+SF : 0
+TF : 0
+AF : 0
+DF : 0
+IF : 1
+LastError : 00000000 (ERROR_SUCCESS)
+LastStatus : 00000000 (STATUS_SUCCESS)
+GS : 002B
+ES : 002B
+CS : 0033
+FS : 0053
+DS : 002B
+SS : 002B
+DR0 : 0000000000000000
+DR1 : 0000000000000000
+DR2 : 0000000000000000
+DR3 : 0000000000000000
+DR6 : 0000000000000000
+DR7 : 0000000000000000
+
+)"
 
 SEG_MAP segs[] = {
     //base			size			file name
@@ -41,8 +69,10 @@ SEG_MAP segs[] = {
     { 0x00000024C1DFA000, 0x0000000000006000, "../../Utils/v1_testexec.vmp_00000024C1DFA000.bin" },
 };
 
+
 std::vector<ZydisDisassembledInstruction> GlobalInstructions;
-constexpr int                             RegisterMaxValue = ZydisRegister::ZYDIS_REGISTER_MAX_VALUE;
+std::vector<std::vector<uint8_t> >        GlobalInstructionBytes;
+constexpr int                             NumberOfRegister = ZydisRegister::ZYDIS_REGISTER_R15 + 1;
 
 std::string GetRegisterNameByEnum(const ZydisRegister Index) {
     auto registerName = std::string { NAMEOF_ENUM(Index) };
@@ -51,39 +81,8 @@ std::string GetRegisterNameByEnum(const ZydisRegister Index) {
     return registerName;
 }
 
-std::string_view GetOperandNameByEnum(const ZydisOperandAction Index) {
-    return NAMEOF_ENUM(Index);
-}
-
-void GetInstructionDetails(ZydisDisassembledInstruction &Instruction) {
-    std::string str;
-
-    auto formatOutput = [](const ZydisRegister Register, const ZydisOperandActions Actions) {
-        auto registerName = GetRegisterNameByEnum(Register);
-
-        if (Actions & ZydisOperandAction::ZYDIS_OPERAND_ACTION_MASK_READ && Actions & ZydisOperandAction::ZYDIS_OPERAND_ACTION_MASK_WRITE) {
-            // 默认先读后写？
-            return std::format("{:<6s}: rw, ", registerName);
-        } else if (Actions & ZydisOperandAction::ZYDIS_OPERAND_ACTION_MASK_WRITE) {
-            return std::format("{:<6s}: w , ", registerName);
-        } else if (Actions & ZYDIS_OPERAND_ACTION_MASK_READ) {
-            return std::format("{:<6s}: r , ", registerName);
-        } else {
-            return std::string {};
-        }
-    };
-
-    for (int j = 0; j < Instruction.info.operand_count; ++j) {
-        if (Instruction.operands[j].type == ZYDIS_OPERAND_TYPE_REGISTER) {
-            str += formatOutput(Instruction.operands[j].reg.value, Instruction.operands[j].actions);
-        }
-    }
-
-    std::println("{:<32s}, {}", Instruction.text, str);
-}
-
 std::string GetInstructionDetailsString(ZydisDisassembledInstruction &Instruction) {
-    std::string str;
+    std::string detailInfo;
 
     auto formatOutput = [](const ZydisRegister Register, const ZydisOperandActions Actions) {
         auto registerName = GetRegisterNameByEnum(Register);
@@ -102,141 +101,176 @@ std::string GetInstructionDetailsString(ZydisDisassembledInstruction &Instructio
 
     for (int j = 0; j < Instruction.info.operand_count; ++j) {
         if (Instruction.operands[j].type == ZYDIS_OPERAND_TYPE_REGISTER) {
-            str += formatOutput(Instruction.operands[j].reg.value, Instruction.operands[j].actions);
+            detailInfo += formatOutput(Instruction.operands[j].reg.value, Instruction.operands[j].actions);
         }
     }
-
-    return std::format("{:<32s}, {}", Instruction.text, str);
+    return std::format("[0x{:016X}]: {:<32s}, {}", Instruction.runtime_address, Instruction.text, detailInfo);
 }
 
-auto GenMatrixFromInstruction(auto &&Instructions) {
-    //                          instruction register action1
-    //              register1 {     ...
-    //                          instruction register action2
-    // matrix:      
-    //                          instruction register action1
-    //              register2 {     ...
-    //                          instruction register action2
-    std::array<std::vector<uint8_t>, RegisterMaxValue> matrix;
-    // init
-    for (int i = 0; i < Instructions.size(); ++i) {
-        for (int j = 0; j < RegisterMaxValue; ++j) {
-            matrix.at(j).emplace_back(0);
-        }
-
-        auto &ins = Instructions.at(i);
-        for (int j = 0; j < ins.info.operand_count; ++j) {
-            if (ins.operands[j].type == ZYDIS_OPERAND_TYPE_REGISTER)
-                matrix.at(ins.operands[j].reg.value).at(i) = ins.operands[j].actions;
-        }
-    }
-    return matrix;
+struct RegisterWithAction {
+    ZydisRegister       reg_;
+    ZydisOperandActions actions_;
 };
 
-void CleanJunkCode() {
-    for (;;) {
-        int  removableInstructionCount = 0;
-        auto matrix                    = GenMatrixFromInstruction(GlobalInstructions);
-
-        // 遍历所有寄存器
-        for (int registerIndex = 0; registerIndex < RegisterMaxValue; ++registerIndex) {
-            auto &registerActions = matrix.at(registerIndex);
-
-            // 遍历所有寄存器的指令 action
-            for (int registerActionIndex = 0; registerActionIndex < registerActions.size(); ++registerActionIndex) {
-                auto removePrevRegisterAction = [&registerIndex, &registerActions](const int currentActionIndex) {
-                    int removableCount = 0;
-                    for (int i = currentActionIndex - 1; i >= 0; --i) {
-                        if (registerActions.at(i) & ZYDIS_OPERAND_ACTION_MASK_READ && registerActions.at(i) & ZYDIS_OPERAND_ACTION_MASK_WRITE) {
-                            auto actionBefore = registerActions.at(i);
-                            registerActions.at(i) &= ~ZYDIS_OPERAND_ACTION_MASK_WRITE;
-#if CLEANUP_DETAILS == 1
-                            std::println("rw,register[{}]\n"
-                                "operator [{}]->[{}]\n"
-                                "instr [{}]\n"
-                                "from  [{}]",
-                                GetRegisterNameByEnum(static_cast<ZydisRegister>(registerIndex)),
-                                GetOperandNameByEnum(static_cast<ZydisOperandAction>(actionBefore)), GetOperandNameByEnum(static_cast<ZydisOperandAction>(registerActions.at(i))),
-                                GetInstructionDetailsString(GlobalInstructions.at(i)),
-                                GetInstructionDetailsString(GlobalInstructions.at(currentActionIndex)));
-#endif
-                            ++removableCount;
-                            break;
-                        } else if (registerActions.at(i) & ZYDIS_OPERAND_ACTION_MASK_WRITE) {
-                            auto actionBefore = registerActions.at(i);
-                            registerActions.at(i) &= ~ZYDIS_OPERAND_ACTION_MASK_WRITE;
-#if CLEANUP_DETAILS == 1
-                            std::println(" w,register[{}]\n"
-                                "operator [{}]->[{}]\n"
-                                "instr [{}]\n"
-                                "from  [{}]",
-                                GetRegisterNameByEnum(static_cast<ZydisRegister>(registerIndex)),
-                                GetOperandNameByEnum(static_cast<ZydisOperandAction>(actionBefore)), GetOperandNameByEnum(static_cast<ZydisOperandAction>(registerActions.at(i))),
-                                GetInstructionDetailsString(GlobalInstructions.at(i)),
-                                GetInstructionDetailsString(GlobalInstructions.at(currentActionIndex)));
-#endif
-                            ++removableCount;
-                        } else if (registerActions.at(i) & ZYDIS_OPERAND_ACTION_MASK_READ) {
-                            break;
-                        }
-                    }
-                    return removableCount;
-                };
-
-                const auto &registerAction = registerActions.at(registerActionIndex);
-                if (registerAction & ZYDIS_OPERAND_ACTION_MASK_READ && registerAction & ZYDIS_OPERAND_ACTION_MASK_WRITE) {
-                    // default 'read' before 'write'
-                    // do nothing
-                } else if (registerAction & ZYDIS_OPERAND_ACTION_MASK_WRITE) {
-                    // todo maybe error?
-                    /* removableInstructionCount += */
-                    removePrevRegisterAction(registerActionIndex);
-                } else if (registerAction & ZYDIS_OPERAND_ACTION_MASK_READ) {
-                    // do nothing
+/**
+ * 获取一条指令的所有寄存器和寄存器的操作（包括 mem 组合使用的寄存器）
+ * @param Instruction 指令
+ * @return RegisterWithOperands vec
+ */
+std::vector<RegisterWithAction> GetInstructionRegisterWithAction(const ZydisDisassembledInstruction &Instruction) {
+    std::vector<RegisterWithAction> registers;
+    for (int i = 0; i < Instruction.info.operand_count; ++i) {
+        if (Instruction.operands[i].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+            registers.emplace_back(Instruction.operands[i].reg.value, Instruction.operands[i].actions);
+        } else if (Instruction.operands[i].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+            // todo, xor [esp], eax 这种情况可能有问题，但是不知道怎么解决
+            if (Instruction.operands[i].mem.base != ZYDIS_REGISTER_NONE) {
+                if (auto it = std::ranges::find_if(registers, [&Instruction, &i](auto &&RegisterWithAction) {
+                        return RegisterWithAction.reg_ == Instruction.operands[i].mem.base;
+                    });
+                    it == registers.end()) {
+                    registers.emplace_back(Instruction.operands[i].mem.base, ZYDIS_OPERAND_ACTION_READ);
                 } else {
-                    // do nothing
+                    it->actions_ |= ZYDIS_OPERAND_ACTION_READ;
+                }
+            }
+            if (Instruction.operands[i].mem.index != ZYDIS_REGISTER_NONE) {
+                if (auto it = std::ranges::find_if(registers, [&Instruction, &i](auto &&RegisterWithAction) {
+                        return RegisterWithAction.reg_ == Instruction.operands[i].mem.index;
+                    });
+                    it == registers.end()) {
+                    registers.emplace_back(Instruction.operands[i].mem.index, ZYDIS_OPERAND_ACTION_READ);
+                } else {
+                    it->actions_ |= ZYDIS_OPERAND_ACTION_READ;
                 }
             }
         }
+    }
+    return registers;
+}
 
-        // 删除所有都是 r 的情况的指令（按照原则1）
-        for (int instructionIndex = 0, deleteIndex = 0; instructionIndex < matrix.at(0).size(); instructionIndex++, deleteIndex++) {
-            // todo verify that
-            // ignore only change IP, FLAGS?
-            bool remove = true;
-            for (int registerIndex = 0; registerIndex <= ZydisRegister::ZYDIS_REGISTER_R15; registerIndex++) {
-                if (matrix.at(registerIndex).at(instructionIndex) & ZYDIS_OPERAND_ACTION_MASK_WRITE) {
-                    remove = false;
+/**
+ * 获取所有只有写操作的 RegisterWithAction
+ * @param RegisterWithActions 所有 RegisterWithAction 
+ * @return 筛选出只有写操作的 RegisterWithAction
+ */
+std::vector<RegisterWithAction> GetWriteOnlyRegisterWithAction(const std::vector<RegisterWithAction> &RegisterWithActions) {
+    std::map<REGISTER_ORDER::RegisterType, std::vector<RegisterWithAction> > table;
+
+    // 这里要处理类似于 mov eax, al 的情况，虽然是两个寄存器，但是是同一种类型的寄存器
+    for (const auto [reg_, actions_]: RegisterWithActions) {
+        table[REGISTER_ORDER::RegToType.at(reg_)].emplace_back(reg_, actions_);
+    }
+
+    std::vector<RegisterWithAction> result;
+    for (const auto &[type, registers]: table) {
+        if (std::ranges::any_of(registers, [](auto &reg_with_action) {
+            return reg_with_action.actions_ & ZYDIS_OPERAND_ACTION_MASK_READ;
+        })) {
+            continue;
+        }
+        result.insert_range(result.end(), registers);
+    }
+
+    return result;
+}
+
+/**
+ * 向上搜索含有目标同类寄存器的指令，如果为 '读写' 则将其替换为 '读', 如果为 '读' 则返回, 如果为 '写' 则移除 '写' 并继续向上搜索
+ * @param Index 当前指令索引
+ * @param Register 目标寄存器
+ */
+void BackSearch(int Index, const ZydisRegister Register) {
+    for (int i = Index - 1; i >= 0; --i) {
+        std::map<REGISTER_ORDER::RegisterType, std::vector<RegisterWithAction> > table;
+        for (auto [reg, action]: GetInstructionRegisterWithAction(GlobalInstructions.at(i))) {
+            table[REGISTER_ORDER::RegToType.at(reg)].emplace_back(reg, action);
+        }
+        // 没有同类寄存器则往前找
+        if (!table.contains(REGISTER_ORDER::RegToType.at(Register))) {
+            continue;
+        }
+
+        auto sameTypeRegisters = table.at(REGISTER_ORDER::RegToType.at(Register));
+        auto it                = std::ranges::find_if(sameTypeRegisters, [](auto &reg_with_action) {
+            return (reg_with_action.actions_ & ZYDIS_OPERAND_ACTION_MASK_WRITE) != 0;
+        });
+        if (it == sameTypeRegisters.end()) {
+            break;
+        }
+        // 针对 mov rax, 1
+        //     mov al, 2
+        //     mov cl, ah
+        // 这种情况，这种情况下，我们并不能直接消除第一个 mov
+        if (it->reg_ > Register) {
+            continue;
+        }
+
+        for (int j = 0; j < GlobalInstructions.at(i).info.operand_count; ++j) {
+            if (GlobalInstructions.at(i).operands[j].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+                // todo has bug?
+                // 针对这种情况 xchg al, ah 或者 xchg al, al，也许不能简单的删除两个寄存器的 w 属性
+                if (GlobalInstructions.at(i).operands[j].reg.value == it->reg_ && GlobalInstructions.at(i).operands[j].actions & ZYDIS_OPERAND_ACTION_MASK_WRITE) {
+                    GlobalInstructions.at(i).operands[j].actions &= ~ZYDIS_OPERAND_ACTION_MASK_WRITE;
+                    std::println("from\t[{}]{}\n"
+                        "remove 'w' [{}]{}", Index, GetInstructionDetailsString(GlobalInstructions.at(Index)), i, GetInstructionDetailsString(GlobalInstructions.at(i)));
                     break;
                 }
             }
+        }
 
-            if (remove) {
-#if CLEANUP_DETAILS == 1
-                std::println("remove instruction at [{}], instruction is: {}", instructionIndex, GlobalInstructions.at(deleteIndex).text);
-#endif
+        // 再次读一遍该条指令，如果只剩下了 read 直接返回
+        ++i;
+    }
+}
 
-                GlobalInstructions.erase(GlobalInstructions.begin() + deleteIndex--);
+/**
+ * 清理无用的指令
+ */
+void CleanJunkCode() {
+    for (;;) {
+        for (int i = 0; i < GlobalInstructions.size(); ++i) {
+            std::println("{}, {}:{}", __func__, i, GetInstructionDetailsString(GlobalInstructions.at(i)));
+            auto regsWithAction = GetInstructionRegisterWithAction(GlobalInstructions.at(i));
+            auto writeOnlyRegs  = GetWriteOnlyRegisterWithAction(regsWithAction);
+            if (writeOnlyRegs.empty()) {
+                continue;
+            }
 
-                // todo
-                ++removableInstructionCount;
+            for (const auto &[reg_, actions_]: writeOnlyRegs) {
+                BackSearch(i, reg_);
             }
         }
 
-        if (removableInstructionCount == 0)
-            break;
-    }
+        bool hasChange = false;
+        for (int i = 0, incOnlyPos = 0; i < GlobalInstructions.size(); ++i, ++incOnlyPos) {
+            auto regsWithAction = GetInstructionRegisterWithAction(GlobalInstructions.at(i));
+            if (regsWithAction.size() == 1 && regsWithAction.at(0).reg_ == ZYDIS_REGISTER_RIP) {
+                std::println("{} remove[{}]: {}", __func__, incOnlyPos, GetInstructionDetailsString(GlobalInstructions.at(i)));
+                GlobalInstructions.erase(GlobalInstructions.begin() + i);
+                GlobalInstructionBytes.erase(GlobalInstructionBytes.begin() + i);
+                --i;
+                hasChange = true;
+                continue;
+            }
+            if (std::ranges::all_of(regsWithAction, [](auto &reg_with_action) {
+                return (reg_with_action.actions_ & ZYDIS_OPERAND_ACTION_MASK_WRITE) == 0;
+            })) {
+                std::println("{} remove[{}]: {}", __func__, incOnlyPos, GetInstructionDetailsString(GlobalInstructions.at(i)));
+                GlobalInstructions.erase(GlobalInstructions.begin() + i);
+                GlobalInstructionBytes.erase(GlobalInstructionBytes.begin() + i);
+                --i;
+                hasChange = true;
+            }
+        }
 
-#if CLEANUP_DETAILS == 1
-    std::println("the cleanup code:");
-#endif
-    for (auto &GlobalInstruction: GlobalInstructions) {
-        GetInstructionDetails(GlobalInstruction);
+        if (!hasChange) {
+            break;
+        }
     }
-    GlobalInstructions.clear();
 }
 
-void doAnalyze(const X64Emulator *Emulator) {
+void DoAnalyze(const X64Emulator *Emulator) {
     auto    currentRip = Emulator->regs_.rip_;
     uint8_t code[32];
     CHECK_ERR(uc_mem_read(Emulator->uc_, currentRip, code, 32));
@@ -246,6 +280,11 @@ void doAnalyze(const X64Emulator *Emulator) {
         throw std::runtime_error(std::format("Failed on ZyanDisassembleIntel with error returned: {}", currentRip));
     }
 
+    // 加入指令
+    GlobalInstructions.emplace_back(insn);
+    GlobalInstructionBytes.emplace_back(code, code + insn.info.length);
+
+    // 判断是否为 语句块结尾
     auto isJcc = [](const ZydisDisassembledInstruction &Insn) {
         const auto total   = Insn.info.operand_count;
         const auto visible = Insn.info.operand_count_visible;
@@ -256,39 +295,41 @@ void doAnalyze(const X64Emulator *Emulator) {
         }
         return false;
     };
-
-
     if (insn.info.mnemonic == ZYDIS_MNEMONIC_CALL
         || insn.info.mnemonic == ZYDIS_MNEMONIC_RET
         || insn.info.mnemonic == ZYDIS_MNEMONIC_JMP && insn.operands[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE
         || insn.text[0] == 'j' && isJcc(insn)
     ) {
+        std::println("end block signature at [0x{:016X}]: {}", insn.runtime_address, insn.text);
         CleanJunkCode();
-        std::println("[0x{:016X}]: {}", insn.runtime_address, insn.text);
-    }
 
-    GlobalInstructions.push_back(insn);
+        for (auto &GlobalInstruction: GlobalInstructions) {
+            std::println("{}", GetInstructionDetailsString(GlobalInstruction));
+        }
+        for (auto &GlobalInstructionByte: GlobalInstructionBytes) {
+            for (int j = 0; j < GlobalInstructionByte.size(); ++j) {
+                std::print("{:02X} ", GlobalInstructionByte.at(j));
+            }
+        }
+        std::println("");
+
+        GlobalInstructions.clear();
+        GlobalInstructionBytes.clear();
+    }
 }
 
-int main(int argc, char **argv, char **envp) {
+int main() {
     // disable output buffering
     setvbuf(stdout, nullptr, _IONBF, 0);
 
     // setting global encoding utf-8
     std::locale::global(std::locale("zh_CN.UTF-8"));
+    REGISTER_ORDER::InitializeMaps();
 
-    X64Emulator emulator {
-        {
-            .rax_ = INIT_RAX, .rbx_ = INIT_RBX, .rcx_ = INIT_RCX, .rdx_ = INIT_RDX,
-            .rbp_ = INIT_RBP, .rsp_ = INIT_RSP, .rsi_ = INIT_RSI, .rdi_ = INIT_RDI,
-            .r8_ = INIT_R8, .r9_ = INIT_R9, .r10_ = INIT_R10, .r11_ = INIT_R11,
-            .r12_ = INIT_R12, .r13_ = INIT_R13, .r14_ = INIT_R14, .r15_ = INIT_R15,
-            .rip_ = INIT_RIP, .rflags_ = INIT_RFL
-        }
-    };
+
+    X64Emulator emulator { ParseRegisterString(REGISTER_PARSER_STR) };
     emulator.LoadSegments(segs);
-    emulator.WriteRegs();
-    emulator.RegisterObserver(0, doAnalyze);
+    emulator.RegisterObserver(0, DoAnalyze);
     emulator.Run();
 
 
