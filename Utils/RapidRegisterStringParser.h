@@ -118,5 +118,53 @@ inline REGS ParseRegisterString(const std::string &Str) {
     return regs;
 }
 
+inline REGS_X86 ParseRegisterString_X86(const std::string &Str) {
+    REGS_X86 regs {};
+
+    std::stringstream ss { Str };
+    std::string       newLine;
+    while (std::getline(ss, newLine, '\n')) {
+        if (newLine.empty()) {
+            continue;
+        }
+
+        const auto colonPos = newLine.find(':');
+        if (colonPos == std::string::npos) {
+            continue;
+        }
+
+        const auto registerName  = newLine.substr(0, newLine.find(' '));
+        const auto registerValue = newLine.substr(newLine.find_first_not_of(' ', colonPos + 1), 8);
+        if (registerName.empty() || registerValue.empty()) {
+            continue;
+        }
+
+        const uint64_t value = std::stoull(registerValue, nullptr, 16);
+        if (registerName == "EAX") {
+            regs.eax_ = value;
+        } else if (registerName == "EBX") {
+            regs.ebx_ = value;
+        } else if (registerName == "ECX") {
+            regs.ecx_ = value;
+        } else if (registerName == "EDX") {
+            regs.edx_ = value;
+        } else if (registerName == "EBP") {
+            regs.ebp_ = value;
+        } else if (registerName == "ESP") {
+            regs.esp_ = value;
+        } else if (registerName == "ESI") {
+            regs.esi_ = value;
+        } else if (registerName == "EDI") {
+            regs.edi_ = value;
+        } else if (registerName == "EIP") {
+            regs.eip_ = value;
+        } else if (registerName == "EFLAGS") {
+            regs.eflags_ = value;
+            break;
+        }
+    }
+    return regs;
+}
+
 
 #endif //RAPID_REGISTER_STRING_PARSER_H

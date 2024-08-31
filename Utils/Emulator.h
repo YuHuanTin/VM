@@ -70,54 +70,6 @@ public:
         WriteRegs();
     }
 
-    void LoadSegments(const std::string_view DumpFilesDirectory) {
-        const std::filesystem::path directory(DumpFilesDirectory);
-        if (!std::filesystem::exists(directory)) {
-            std::println("Dump files directory not exists");
-            return;
-        }
-
-        for (const auto &entry: std::filesystem::directory_iterator(directory)) {
-            auto fileNamePath = entry.path().filename();
-            auto fileNameStr  = fileNamePath.string();
-            if (fileNamePath.extension() != ".bin" || !fileNameStr.starts_with("ba") || 2 + 16 != fileNameStr.find("si")) {
-                continue;
-            }
-
-            const auto dumpBase = std::stoull(fileNameStr.substr(2, 16), nullptr, 16);
-            const auto dumpSize = std::stoull(fileNameStr.substr(2 + 16 + 2, 16), nullptr, 16);
-
-            auto buffer = ReadFileBinary(entry.path().string());
-            assert(buffer.size() == dumpSize && "Segment size mismatch?");
-
-            // map memory for this emulation
-            CHECK_ERR(uc_mem_map(uc_, dumpBase, dumpSize, UC_PROT_ALL));
-
-            // write machine code to be emulated to memory
-            CHECK_ERR(uc_mem_write(uc_, dumpBase, buffer.data(), dumpSize));
-
-            if (optional_DetailOutput_)
-                std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", dumpBase, dumpBase + dumpSize, fileNameStr);
-        }
-    }
-
-    void LoadSegments(std::span<SEG_MAP> Segs) {
-        // map memory for this emulation
-        for (auto [base_, size_, file_name_]: Segs) {
-            auto buffer = ReadFileBinary(file_name_);
-            assert(buffer.size() == size_ && "Segment size mismatch?");
-
-            // map memory for this emulation
-            CHECK_ERR(uc_mem_map(uc_, base_, size_, UC_PROT_ALL));
-
-            // write machine code to be emulated to memory
-            CHECK_ERR(uc_mem_write(uc_, base_, buffer.data(), size_));
-
-            if (optional_DetailOutput_)
-                std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", base_, base_ + size_, file_name_);
-        }
-    }
-
     void LoadSegments(std::span<SEG_MAP_MEM> Segs) {
         // map memory for this emulation
         for (auto [base_, size_, buffer]: Segs) {
@@ -253,54 +205,6 @@ public:
         WriteRegs();
     }
 
-    void LoadSegments(const std::string_view DumpFilesDirectory) {
-        const std::filesystem::path directory(DumpFilesDirectory);
-        if (!std::filesystem::exists(directory)) {
-            std::println("Dump files directory not exists");
-            return;
-        }
-
-        for (const auto &entry: std::filesystem::directory_iterator(directory)) {
-            auto fileNamePath = entry.path().filename();
-            auto fileNameStr  = fileNamePath.string();
-            if (fileNamePath.extension() != ".bin" || !fileNameStr.starts_with("ba") || 2 + 16 != fileNameStr.find("si")) {
-                continue;
-            }
-
-            const auto dumpBase = std::stoull(fileNameStr.substr(2, 16), nullptr, 16);
-            const auto dumpSize = std::stoull(fileNameStr.substr(2 + 16 + 2, 16), nullptr, 16);
-
-            auto buffer = ReadFileBinary(entry.path().string());
-            assert(buffer.size() == dumpSize && "Segment size mismatch?");
-
-            // map memory for this emulation
-            CHECK_ERR(uc_mem_map(uc_, dumpBase, dumpSize, UC_PROT_ALL));
-
-            // write machine code to be emulated to memory
-            CHECK_ERR(uc_mem_write(uc_, dumpBase, buffer.data(), dumpSize));
-
-            if (optional_DetailOutput_)
-                std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", dumpBase, dumpBase + dumpSize, fileNameStr);
-        }
-    }
-
-    void LoadSegments(std::span<SEG_MAP_X86> Segs) {
-        // map memory for this emulation
-        for (auto [base_, size_, file_name_]: Segs) {
-            auto buffer = ReadFileBinary(file_name_);
-            assert(buffer.size() == size_ && "Segment size mismatch?");
-
-            // map memory for this emulation
-            CHECK_ERR(uc_mem_map(uc_, base_, size_, UC_PROT_ALL));
-
-            // write machine code to be emulated to memory
-            CHECK_ERR(uc_mem_write(uc_, base_, buffer.data(), size_));
-
-            if (optional_DetailOutput_)
-                std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", base_, base_ + size_, file_name_);
-        }
-    }
-
     void LoadSegments(std::span<SEG_MAP_MEM_X86> Segs) {
         // map memory for this emulation
         for (auto [base_, size_, buffer]: Segs) {
@@ -327,8 +231,8 @@ public:
             regs_.eip_, regs_.eflags_);
     }
 
-    void PrintStack(uint64_t Esp) {
-        uint64_t val;
+    void PrintStack(uint32_t Esp) {
+        uint32_t val;
         for (int i = 0; i < 10; i++) {
             uc_mem_read(uc_, Esp, &val, 4);
             std::println("|0x{:08X}|", val);
@@ -340,7 +244,7 @@ public:
         observers_[ObserverAddress] = Observer;
     }
 
-    void Run(const uint64_t Until = 0xFFFFFFFFFFFFFFFF) {
+    void Run(const uint32_t Until = 0xFFFFFFFF) {
         for (; regs_.eip_ != Until;) {
             if (observers_.contains(regs_.eip_)) {
                 if (optional_AutoAutoSyncRegs_)
@@ -366,7 +270,7 @@ public:
                 throw std::runtime_error("error!");
             }
 
-            CHECK_ERR(uc_reg_read(uc_, UC_X86_REG_RIP, &regs_.esp_));
+            CHECK_ERR(uc_reg_read(uc_, UC_X86_REG_EIP, &regs_.eip_));
         }
         ReadRegs();
     }

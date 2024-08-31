@@ -13,18 +13,6 @@
 #include <nameof.hpp>
 #include <Zydis/Zydis.h>
 
-struct SEG_MAP {
-    uint64_t         base_;
-    uint64_t         size_;
-    std::string_view file_name_;
-};
-
-struct SEG_MAP_X86 {
-    uint32_t         base_;
-    uint32_t         size_;
-    std::string_view file_name_;
-};
-
 struct SEG_MAP_MEM {
     uint64_t    base_;
     uint64_t    size_;
