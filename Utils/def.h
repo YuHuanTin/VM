@@ -7,49 +7,37 @@
 
 #include <cstdint>
 #include <fstream>
+#include <map>
 #include <string_view>
 
-#include <Zydis/Zydis.h>
 #include <nameof.hpp>
-
-#define ARCHITECTURE_X86 0
-#define ARCHITECTURE_X64 1
-
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
-#if defined(__x86_64__) || defined(_M_X64)
-#define ARCHITECTURE ARCHITECTURE_X64
-#elif defined(__i386) || defined(_M_IX86)
-#define ARCHITECTURE ARCHITECTURE_X86
-#endif
-#else
-#error "Unsupported architecture"
-#endif
-
+#include <Zydis/Zydis.h>
 
 struct SEG_MAP {
-#if ARCHITECTURE == ARCHITECTURE_X64
-    uint64_t base_;
-    uint64_t size_;
-#elif ARCHITECTURE == ARCHITECTURE_X86
+    uint64_t         base_;
+    uint64_t         size_;
+    std::string_view file_name_;
+};
+
+struct SEG_MAP_X86 {
     uint32_t         base_;
     uint32_t         size_;
-#endif
     std::string_view file_name_;
 };
 
 struct SEG_MAP_MEM {
-#if ARCHITECTURE == ARCHITECTURE_X64
-    uint64_t base_;
-    uint64_t size_;
-#elif ARCHITECTURE == ARCHITECTURE_X86
-    uint32_t         base_;
-    uint32_t         size_;
-#endif
+    uint64_t    base_;
+    uint64_t    size_;
+    std::string buffer_;
+};
+
+struct SEG_MAP_MEM_X86 {
+    uint32_t    base_;
+    uint32_t    size_;
     std::string buffer_;
 };
 
 struct REGS {
-#if ARCHITECTURE == ARCHITECTURE_X64
     uint64_t rax_;
     uint64_t rbx_;
     uint64_t rcx_;
@@ -68,7 +56,9 @@ struct REGS {
     uint64_t r15_;
     uint64_t rip_;
     uint64_t rflags_;
-#elif ARCHITECTURE == ARCHITECTURE_X86
+};
+
+struct REGS_X86 {
     uint32_t eax_;
     uint32_t ebx_;
     uint32_t ecx_;
@@ -79,7 +69,6 @@ struct REGS {
     uint32_t edi_;
     uint32_t eip_;
     uint32_t eflags_;
-#endif
 };
 
 namespace REGISTER_ORDER {

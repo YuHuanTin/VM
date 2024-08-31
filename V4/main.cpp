@@ -72,7 +72,6 @@ SEG_MAP segs[] = {
 
 std::vector<ZydisDisassembledInstruction> GlobalInstructions;
 std::vector<std::vector<uint8_t> >        GlobalInstructionBytes;
-constexpr int                             NumberOfRegister = ZydisRegister::ZYDIS_REGISTER_R15 + 1;
 
 std::string GetRegisterNameByEnum(const ZydisRegister Index) {
     auto registerName = std::string { NAMEOF_ENUM(Index) };

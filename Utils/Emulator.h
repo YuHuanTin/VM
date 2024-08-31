@@ -197,4 +197,184 @@ public:
     }
 };
 
+class X86Emulator {
+    int reg_batch_[10] = {
+        UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX,
+        UC_X86_REG_EBP, UC_X86_REG_ESP, UC_X86_REG_ESI, UC_X86_REG_EDI,
+        UC_X86_REG_EIP, UC_X86_REG_EFLAGS
+    };
+    void *reg_value_batch_[10] = {
+        &regs_.eax_, &regs_.ebx_, &regs_.ecx_, &regs_.edx_,
+        &regs_.ebp_, &regs_.esp_, &regs_.esi_, &regs_.edi_,
+        &regs_.eip_, &regs_.eflags_
+    };
+
+    // 保留 0 作为所有代码的观察者
+    std::unordered_map<uint64_t, std::function<void(X86Emulator *)> > observers_;
+
+public:
+    uc_engine *uc_ { nullptr };
+    REGS_X86   regs_;
+    bool       optional_AutoAutoSyncRegs_;
+    bool       optional_DetailOutput_;
+
+    /**
+     * 写入所有寄存器的值，从 regs_
+    */
+    void WriteRegs() {
+        CHECK_ERR(uc_reg_write_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
+    }
+
+    /**
+     * 读取所有寄存器的值，写到 regs_
+     */
+    void ReadRegs() {
+        CHECK_ERR(uc_reg_read_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
+    }
+
+    explicit X86Emulator(const REGS_X86 &Regs, const bool AutoSyncRegs = true, const bool RegisterInstructionOutput = true, const bool DetailOutput = true)
+        : regs_(Regs), optional_AutoAutoSyncRegs_(AutoSyncRegs), optional_DetailOutput_(DetailOutput) {
+        CHECK_ERR(uc_open(UC_ARCH_X86, UC_MODE_32, &uc_));
+
+        if (optional_DetailOutput_) {
+            std::println("Emulate Intel32 machine code");
+        }
+
+        if (RegisterInstructionOutput) {
+            RegisterObserver(0, [](const X86Emulator *Emu) {
+                uint8_t code[32];
+                CHECK_ERR(uc_mem_read(Emu->uc_, Emu->regs_.eip_, code, 32));
+                ZydisDisassembledInstruction insn;
+                ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LEGACY_32, Emu->regs_.eip_, code, 32, &insn);
+                std::println("[0x{:08X}], {}", insn.runtime_address, insn.text);
+            });
+        }
+
+        WriteRegs();
+    }
+
+    void LoadSegments(const std::string_view DumpFilesDirectory) {
+        const std::filesystem::path directory(DumpFilesDirectory);
+        if (!std::filesystem::exists(directory)) {
+            std::println("Dump files directory not exists");
+            return;
+        }
+
+        for (const auto &entry: std::filesystem::directory_iterator(directory)) {
+            auto fileNamePath = entry.path().filename();
+            auto fileNameStr  = fileNamePath.string();
+            if (fileNamePath.extension() != ".bin" || !fileNameStr.starts_with("ba") || 2 + 16 != fileNameStr.find("si")) {
+                continue;
+            }
+
+            const auto dumpBase = std::stoull(fileNameStr.substr(2, 16), nullptr, 16);
+            const auto dumpSize = std::stoull(fileNameStr.substr(2 + 16 + 2, 16), nullptr, 16);
+
+            auto buffer = ReadFileBinary(entry.path().string());
+            assert(buffer.size() == dumpSize && "Segment size mismatch?");
+
+            // map memory for this emulation
+            CHECK_ERR(uc_mem_map(uc_, dumpBase, dumpSize, UC_PROT_ALL));
+
+            // write machine code to be emulated to memory
+            CHECK_ERR(uc_mem_write(uc_, dumpBase, buffer.data(), dumpSize));
+
+            if (optional_DetailOutput_)
+                std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", dumpBase, dumpBase + dumpSize, fileNameStr);
+        }
+    }
+
+    void LoadSegments(std::span<SEG_MAP_X86> Segs) {
+        // map memory for this emulation
+        for (auto [base_, size_, file_name_]: Segs) {
+            auto buffer = ReadFileBinary(file_name_);
+            assert(buffer.size() == size_ && "Segment size mismatch?");
+
+            // map memory for this emulation
+            CHECK_ERR(uc_mem_map(uc_, base_, size_, UC_PROT_ALL));
+
+            // write machine code to be emulated to memory
+            CHECK_ERR(uc_mem_write(uc_, base_, buffer.data(), size_));
+
+            if (optional_DetailOutput_)
+                std::println("Segment [0x{:x}, 0x{:x}] loaded from file: {}", base_, base_ + size_, file_name_);
+        }
+    }
+
+    void LoadSegments(std::span<SEG_MAP_MEM_X86> Segs) {
+        // map memory for this emulation
+        for (auto [base_, size_, buffer]: Segs) {
+            assert(buffer.size() == size_ && "Segment size mismatch?");
+
+            // map memory for this emulation
+            CHECK_ERR(uc_mem_map(uc_, base_, size_, UC_PROT_ALL));
+
+            // write machine code to be emulated to memory
+            CHECK_ERR(uc_mem_write(uc_, base_, buffer.data(), size_));
+
+            if (optional_DetailOutput_)
+                std::println("Segment [0x{:x}, 0x{:x}]", base_, base_ + size_);
+        }
+    }
+
+    void PrintRegs() {
+        std::println(
+            "eax: 0x{:08X}\nebx: 0x{:08X}\necx: 0x{:08X}\nedx: 0x{:08X}\n"
+            "ebp: 0x{:08X}\nesp: 0x{:08X}\nesi: 0x{:08X}\nedi: 0x{:08X}\n"
+            "eip: 0x{:08X}\neflags: 0x{:08X}",
+            regs_.eax_, regs_.ebx_, regs_.ecx_, regs_.edx_,
+            regs_.ebp_, regs_.esp_, regs_.esi_, regs_.edi_,
+            regs_.eip_, regs_.eflags_);
+    }
+
+    void PrintStack(uint64_t Esp) {
+        uint64_t val;
+        for (int i = 0; i < 10; i++) {
+            uc_mem_read(uc_, Esp, &val, 4);
+            std::println("|0x{:08X}|", val);
+            Esp += 4;
+        }
+    }
+
+    void RegisterObserver(const uint64_t ObserverAddress, std::function<void(X86Emulator *)> &&Observer) {
+        observers_[ObserverAddress] = Observer;
+    }
+
+    void Run(const uint64_t Until = 0xFFFFFFFFFFFFFFFF) {
+        for (; regs_.eip_ != Until;) {
+            if (observers_.contains(regs_.eip_)) {
+                if (optional_AutoAutoSyncRegs_)
+                    ReadRegs();
+                observers_.at(regs_.eip_)(this);
+                if (optional_AutoAutoSyncRegs_)
+                    WriteRegs();
+            }
+            if (observers_.contains(0)) {
+                if (optional_AutoAutoSyncRegs_)
+                    ReadRegs();
+                observers_[0](this);
+                if (optional_AutoAutoSyncRegs_)
+                    WriteRegs();
+            }
+
+            if (const auto err = uc_emu_start(uc_, regs_.eip_, 0xffffffff, 0, 1);
+                err != UC_ERR_OK) {
+                std::println("Exception with error returned {}: {}",
+                    static_cast<unsigned int>(err), uc_strerror(err));
+                PrintRegs();
+                PrintStack(regs_.esp_);
+                throw std::runtime_error("error!");
+            }
+
+            CHECK_ERR(uc_reg_read(uc_, UC_X86_REG_RIP, &regs_.esp_));
+        }
+        ReadRegs();
+    }
+
+    ~X86Emulator() {
+        uc_close(uc_);
+    }
+};
+
+
 #endif //EMULATOR_H
