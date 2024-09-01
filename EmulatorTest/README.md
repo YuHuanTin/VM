@@ -1,0 +1,3 @@
+- [BranchAnalyze](BranchAnalyze.cpp) 基于 emulator 的分支流程图分析
+- [BranchAnalyze2](BranchAnalyze2.cpp) 基于汇编指令的分支流程图分析
+- [easyPatch](easyPatch.cpp) 直接 patch 程序内存
