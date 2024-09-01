@@ -9,6 +9,7 @@
 #include <fstream>
 #include <map>
 #include <string_view>
+#include <vector>
 
 #include <nameof.hpp>
 #include <Zydis/Zydis.h>
