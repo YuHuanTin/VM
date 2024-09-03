@@ -1,5 +1,6 @@
 #define NAMEOF_ENUM_RANGE_MAX ZYDIS_REGISTER_MAX_VALUE
 #include <algorithm>
+#include <numeric>
 #include <chrono>
 #include <map>
 #include <print>
@@ -98,17 +99,21 @@ std::string GetInstructionDetailsString(ZydisDisassembledInstruction &Instructio
     return std::format("[0x{:016X}]: {:<32s}, {}", Instruction.runtime_address, Instruction.text, detailInfo);
 }
 
-auto IsJcc(const ZydisDisassembledInstruction &Insn) {
-    if (Insn.text[0] != 'j') {
+auto IsJcc(const ZydisDisassembledInstruction &Inst) {
+    if (Inst.text[0] != 'j') {
         return false;
     }
-    const auto total = Insn.info.operand_count;
+    const auto total = Inst.info.operand_count;
     for (int i = 0; i < total; i++) {
-        if (Insn.operands[i].reg.value == ZYDIS_REGISTER_EFLAGS) {
+        if (Inst.operands[i].reg.value == ZYDIS_REGISTER_EFLAGS) {
             return true;
         }
     }
     return false;
+}
+
+void PatchJccOffset(InstructionWithData &Insn_with_data) {
+    
 }
 
 /**
@@ -135,6 +140,25 @@ void BranchAnalyze() {
 
         // assume jz, then have two branches, emulator will choose one of and run, so we just pass to next instruction and log address as new branch
         if (!std::ranges::contains(okAddr, begin)) {
+            // change jcc offset
+            uint64_t blockLen = 0;
+            if (GlobalInstructionBranch.contains(begin)) {
+                std::ranges::for_each(GlobalInstructionBranch.at(begin), [&blockLen](auto &branch) {
+                    blockLen += branch.Instruction.info.length;
+                });
+            }
+
+            uint64_t targetRuntimeAddress = GlobalInstruction.runtime_address + GlobalInstruction.info.length + GlobalInstruction.operands[0].imm.value.u;
+            uint64_t newOffset            = targetRuntimeAddress - (begin + blockLen + GlobalInstruction.info.length);
+            // GlobalInstruction.operands[0].imm.value.u = newOffset;
+
+            assert(GlobalInstructionByte.size() == 6 && "Jcc instruction length should be 6 bytes? ( near jcc is never used )");
+
+            GlobalInstructionByte[2] = newOffset & 0xFF;
+            GlobalInstructionByte[3] = (newOffset >> 8) & 0xFF;
+            GlobalInstructionByte[4] = (newOffset >> 16) & 0xFF;
+            GlobalInstructionByte[5] = (newOffset >> 24) & 0xFF;
+
             GlobalInstructionBranch[begin].emplace_back(GlobalInstruction, GlobalInstructionByte);
         }
         hasMultiBranch = true;
@@ -146,7 +170,7 @@ void BranchAnalyze() {
         int i = 0;
         for (i = 0; i < v.size(); i++) {
             std::println("{}", GetInstructionDetailsString(v.at(i).Instruction));
-        }    
+        }
         for (i = 0; i < v.size(); i++) {
             for (int j = 0; j < v.at(i).Bytes.size(); j++) {
                 std::print("{:02X} ", v.at(i).Bytes.at(j));
@@ -238,21 +262,7 @@ void DoAnalyze(const X86Emulator *Emulator) {
     }
 }
 
-void cb(uc_engine *uc, uc_mem_type type, uint64_t address, int size, int64_t value, void *user_data) {
-    if (type == UC_MEM_WRITE) {
-        std::println("[Write] address: 0x{:016X}, value: 0x{:016X}, size: {}", address, value, size);
-    }
-    if (type == UC_MEM_READ) {
-        uint64_t v = 0;
-        CHECK_ERR(uc_mem_read(uc, address, &v, size));
-        std::println("[Read]  address: 0x{:016X}, size: {}, value: 0x{:016X}", address, size, v);
-    }
-    if (type == UC_MEM_FETCH) {
-        throw std::runtime_error("Failed on UC_MEM_FETCH");
-    }
-}
-
-int main(int argc, char *argv[]) {
+int main() {
     // disable output buffering
     setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -265,23 +275,22 @@ int main(int argc, char *argv[]) {
     // RipperMemoryDumper rip(PROCESS_ID, DUMP_FILE_DIR);
     // rip.DumpMemory(DUMP_BEGIN, DUMP_END);
     RapidMemoryLoader<SEG_MAP_MEM_X86> loader(DUMP_FILE_DIR);
-    loader.AppendMoreSegs<SEG_MAP_X86>({ 0x0019D000, 0x00003000, "destination - 副本_0019D000.bin" });
+    loader.AppendMoreSegs<SEG_MAP_X86>({ 0x0019D000, 0x00003000, "D:/我的文件/IDM/下载文件-IDM/destination - 副本_0019D000.bin" });
 
     const REGS_X86 parsedRegs = ParseRegisterString_X86(REGISTER_PARSER_STR);
     X86Emulator    emulator { parsedRegs };
 
     emulator.RegisterObserver(0, DoAnalyze);
-    // uc_hook hook;
-    // uc_hook_add(emulator.uc_, &hook, UC_HOOK_MEM_VALID, cb, &emulator, 0x0019D000, 0x00424000);
-
-
     try {
         emulator.LoadSegments(loader.GetSegMap());
         emulator.Run(0x00414504);
 
 
         std::println("-------------------------------------end -------------------------------------");
-        BranchAnalyze();
+        // BranchAnalyze();
+        for (const auto &v: GlobalInstructions) {
+            std::println("0x{:016x}, {}", v.runtime_address, v.text);
+        }
     } catch (std::exception &Exception) {
         std::println("Exception: {}", Exception.what());
     }

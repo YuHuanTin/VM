@@ -10,45 +10,72 @@
 #include "../Utils/Emulator.h"
 #include "../Utils/RapidMemoryDumper.h"
 
-std::string GetInstructionDetailsString(ZydisDisassembledInstruction &Instruction) {
-    return std::format("[0x{:016X}]: {:<32s}", Instruction.runtime_address, Instruction.text);
+using RuntimeAddressType = uint64_t;
+using FileOffsetType     = uint64_t;
+using BytesType          = std::vector<uint8_t>;
+
+extern ZydisDisassembledInstruction GetInstFromBytes(std::span<uint8_t> Bytes, RuntimeAddressType RuntimeAddr);
+
+extern RuntimeAddressType GetJccTargetAddress(const ZydisDisassembledInstruction &Inst);
+
+struct BranchInfo {
+    FileOffsetType     file_offset_;
+    RuntimeAddressType runtime_address_;
+    uint64_t           branch_id_;
+};
+
+struct InstructionWithData {
+    ZydisDisassembledInstruction Instruction;
+    BytesType                    Bytes;
+};
+
+uint64_t MaxBranchId = 0;
+
+std::queue<BranchInfo> BranchQueue;
+
+std::map<RuntimeAddressType, std::vector<InstructionWithData> > BlockMap;
+
+std::vector<RuntimeAddressType> traveledAddress;
+
+std::string GetInstructionDetailsString(const ZydisDisassembledInstruction &Inst) {
+    return std::format("[0x{:016X}]: {:<32s}", Inst.runtime_address, Inst.text);
 }
 
-auto IsJmp(const ZydisDisassembledInstruction &Insn) {
-    return Insn.info.mnemonic == ZYDIS_MNEMONIC_JMP;
+auto IsJmp(const ZydisDisassembledInstruction &Inst) {
+    return Inst.info.mnemonic == ZYDIS_MNEMONIC_JMP;
 }
 
-auto IsJcc(const ZydisDisassembledInstruction &Insn) {
-    if (Insn.text[0] != 'j') {
+auto IsJcc(const ZydisDisassembledInstruction &Inst) {
+    if (Inst.text[0] != 'j') {
         return false;
     }
-    if (IsJmp(Insn)) {
+    if (IsJmp(Inst)) {
         return true;
     }
-    const auto total = Insn.info.operand_count;
+    const auto total = Inst.info.operand_count;
     for (int i = 0; i < total; i++) {
-        if (Insn.operands[i].reg.value == ZYDIS_REGISTER_EFLAGS) {
+        if (Inst.operands[i].reg.value == ZYDIS_REGISTER_EFLAGS) {
             return true;
         }
     }
     return false;
 }
 
-bool InBlackList(const ZydisDisassembledInstruction &Insn) {
-    if (Insn.info.mnemonic == ZYDIS_MNEMONIC_AAA ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_AAD ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_AAS ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_ARPL ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_BOUND ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_DAS ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_LAHF ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_LODSB ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_INT ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_INT1 ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_INT3 ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_OUTSB ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_OUTSD ||
-        Insn.info.mnemonic == ZYDIS_MNEMONIC_ROL
+bool InBlackList(const ZydisDisassembledInstruction &Inst) {
+    if (Inst.info.mnemonic == ZYDIS_MNEMONIC_AAA ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_AAD ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_AAS ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_ARPL ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_BOUND ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_DAS ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_LAHF ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_LODSB ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_INT ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_INT1 ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_INT3 ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_OUTSB ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_OUTSD ||
+        Inst.info.mnemonic == ZYDIS_MNEMONIC_ROL
     ) {
         return true;
     }
@@ -56,133 +83,130 @@ bool InBlackList(const ZydisDisassembledInstruction &Insn) {
     return false;
 }
 
-bool InBlackAddr(const ZydisDisassembledInstruction &Insn) {
-    std::vector<std::pair<uint64_t, uint64_t> > BlackList = {
-        { 0x0041B7AC, 0x0041B97B }
-    };
-    std::vector<uint64_t> SingleBlackList = {
-        0x0041435C, 0x000000000041474C, 0x0000000000414A66, 0x0000000000414A5A, 0x0000000000414BB4
-    };
-    return std::ranges::any_of(BlackList, [&](auto item) { return item.first <= Insn.runtime_address && Insn.runtime_address <= item.second; }) ||
-           std::ranges::any_of(SingleBlackList, [&](auto item) { return item == Insn.runtime_address; });
+auto CreateJmp(RuntimeAddressType RuntimeAddr, RuntimeAddressType TargetAddr) {
+    ZydisEncoderRequest req {};
+    req.machine_mode      = ZYDIS_MACHINE_MODE_LEGACY_32;
+    req.mnemonic          = ZYDIS_MNEMONIC_JMP;
+    req.operand_count     = 1;
+    req.operands[0].type  = ZYDIS_OPERAND_TYPE_IMMEDIATE;
+    req.operands[0].imm.u = TargetAddr;
+
+    BytesType bytes(5, '\0');
+    ZyanUSize expectedBytes = 5;
+
+    if (ZYAN_FAILED(ZydisEncoderEncodeInstructionAbsolute(&req, bytes.data(), &expectedBytes, RuntimeAddr))) {
+        throw std::runtime_error("CreateJmp: ZydisEncoderEncodeInstructionAbsolute failed");
+    }
+    return bytes;
 }
 
-/**
- * seg RVA and runtime address
- */
-struct BranchInfo {
-    uint64_t block_start_rva_;
-    uint64_t block_runtime_address_;
-    uint64_t branch_id_;
-};
+void DoBasicClean(std::vector<InstructionWithData> &InstWithData) {
+    for (int i = 0; i < InstWithData.size(); ++i) {
+        const auto &[inst, bytes] = InstWithData.at(i);
 
-using RuntimeAddressDef = uint64_t;
-
-uint64_t BranchId = 0;
-
-std::queue<BranchInfo> BranchQueue;
-
-std::map<RuntimeAddressDef, std::vector<ZydisDisassembledInstruction> > BlockMap;
-
-std::vector<RuntimeAddressDef> traveledAddress;
-
-void DoBasicClean(std::vector<ZydisDisassembledInstruction> &Insn) {
-    for (int i = 0; i < Insn.size(); ++i) {
-        const auto &insn = Insn.at(i);
-
-        while (insn.info.mnemonic == ZYDIS_MNEMONIC_RET) {
-            int size      = Insn.size();
-            int indexCall = size - 2 - 1; // call xxxx
+        while (inst.info.mnemonic == ZYDIS_MNEMONIC_RET) {
+            const int indexCall = i - 2; // call xxxx
             if (indexCall < 0) {
                 break;
             }
-
-            if (Insn.at(indexCall).info.mnemonic != ZYDIS_MNEMONIC_CALL) {
+            if (InstWithData.at(indexCall).Instruction.info.mnemonic != ZYDIS_MNEMONIC_CALL
+                || InstWithData.at(indexCall).Instruction.operands[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE) {
                 break;
             }
-            if (Insn.at(indexCall).operands[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-                break;
-            }
-            if (Insn.at(indexCall).operands[0].imm.value.u + Insn.at(indexCall).runtime_address + Insn.at(indexCall).info.length
-                != Insn.at(indexCall + 1).runtime_address) {
+            if (GetJccTargetAddress(InstWithData.at(indexCall).Instruction) != InstWithData.at(indexCall + 1).Instruction.runtime_address) {
                 break;
             }
 
-
-            Insn.erase(Insn.begin() + i - 2, Insn.begin() + i + 1);
-            i--;
+            InstWithData.erase(InstWithData.begin() + indexCall, InstWithData.begin() + i + 1);
+            i -= 3;
             break;
         }
 
-        while (insn.info.mnemonic == ZYDIS_MNEMONIC_JNZ) {
-            int size    = Insn.size();
-            int indexJz = size - 2; // call xxxx
+        while (inst.info.mnemonic == ZYDIS_MNEMONIC_JNZ) {
+            int indexJz = i - 1; // jz xxxx
             if (indexJz < 0) {
                 break;
             }
 
-            if (Insn.at(indexJz).info.mnemonic != ZYDIS_MNEMONIC_JZ) {
+            if (InstWithData.at(indexJz).Instruction.info.mnemonic != ZYDIS_MNEMONIC_JZ) {
                 break;
             }
 
-            if (Insn.at(indexJz).operands[0].imm.value.u - Insn.at(indexJz).info.length
-                != Insn.at(indexJz + 1).operands[0].imm.value.u) {
+            if (GetJccTargetAddress(InstWithData.at(indexJz).Instruction) != GetJccTargetAddress(InstWithData.at(i).Instruction)) {
                 break;
             }
 
-            for (int j = 0; j < 2; ++j) {
-                Insn.erase(Insn.begin() + i - 1);
-            }
-            i--;
+            // replace with jmp xxxx
+            InstWithData.erase(InstWithData.begin() + indexJz, InstWithData.begin() + i + 1);
+            i -= 2;
+
+            auto jmpBytes = CreateJmp(inst.runtime_address, GetJccTargetAddress(inst));
+            auto jmp      = GetInstFromBytes(jmpBytes, inst.runtime_address);
+            InstWithData.emplace_back(jmp, jmpBytes);
             break;
         }
     }
 }
 
+RuntimeAddressType GetJccTargetAddress(const ZydisDisassembledInstruction &Inst) {
+    if (IsJmp(Inst)) {
+        // assert(Inst.info.length == 5 && "this jmp is near or far instruction");
+        return Inst.operands[0].imm.value.u + Inst.info.length + Inst.runtime_address;
+    }
+    // assert(Inst.info.length == 6 && "this jcc is near or far instruction");
+    return Inst.operands[0].imm.value.u + Inst.info.length + Inst.runtime_address;
+}
+
+ZydisDisassembledInstruction GetInstFromBytes(std::span<uint8_t> Bytes, RuntimeAddressType RuntimeAddr) {
+    ZydisDisassembledInstruction inst;
+    if (ZYAN_FAILED(ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LEGACY_32, RuntimeAddr, Bytes.data(), Bytes.size(), &inst))) {
+        throw std::runtime_error("GetInstFromBytes: ZydisDisassembleIntel failed");
+    }
+    return inst;
+}
+
 std::optional<ZydisDisassembledInstruction>
-GetJccInstruction(uint64_t QRVA, uint64_t QRunAddr, const std::span<uint8_t> Code) {
-    if (QRVA + 32 > Code.size()) {
-        std::println("not normal instruction: 0x{:016X}", QRunAddr);
+GetInst(FileOffsetType FileOffset, RuntimeAddressType RuntimeAddr, const std::span<uint8_t> Code) {
+    if (FileOffset + 32 > Code.size()) {
+        std::println("not normal instruction: 0x{:016X}", RuntimeAddr);
         return std::nullopt;
     }
+    ZydisDisassembledInstruction inst;
+    if (ZYAN_FAILED(ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LEGACY_32, RuntimeAddr, Code.data() + FileOffset, 32, &inst))) {
+        std::println("not normal instruction: 0x{:016X}", RuntimeAddr);
+        return std::nullopt;
+    }
+    return inst;
+}
 
-    bool           failed       = false;
-    const uint64_t startAddress = QRunAddr;
+std::optional<ZydisDisassembledInstruction>
+SkipUntilJccInst(FileOffsetType FileOffset, RuntimeAddressType RuntimeAddr, const std::span<uint8_t> Code) {
+    bool       failed       = false;
+    const auto startAddress = RuntimeAddr;
 
-    ZydisDisassembledInstruction insn;
+    std::optional<ZydisDisassembledInstruction> optInst;
     for (;;) {
-        std::span<uint8_t> buffer = Code.subspan(QRVA, 32);
-
-        if (!ZYAN_SUCCESS(ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LEGACY_32, QRunAddr, buffer.data(), buffer.size(), &insn))) {
-            std::println("not normal instruction: 0x{:016X}", QRunAddr);
-            failed = true;
-            break;
-        }
-        BlockMap[startAddress].emplace_back(insn);
-
-        if (InBlackList(insn)) {
-            std::println("in black list: 0x{:016X}, {}", QRunAddr, GetInstructionDetailsString(insn));
+        optInst = GetInst(FileOffset, RuntimeAddr, Code);
+        if (!optInst) {
             failed = true;
             break;
         }
 
-        if (InBlackAddr(insn)) {
-            std::println("in black addr: 0x{:016X}, {}", QRunAddr, GetInstructionDetailsString(insn));
+        auto &inst = optInst.value();
+        BlockMap[startAddress].emplace_back(inst, BytesType(Code.begin() + FileOffset, Code.begin() + FileOffset + inst.info.length));
+
+        if (InBlackList(inst)) {
+            std::println("in black list: 0x{:016X}, {}", RuntimeAddr, GetInstructionDetailsString(inst));
             failed = true;
             break;
         }
 
-        if (insn.info.mnemonic == ZYDIS_MNEMONIC_RET) {
+        std::println("{}", GetInstructionDetailsString(inst));
+        if (IsJcc(inst)) {
             break;
         }
-
-        if (IsJcc(insn)) {
-            break;
-        }
-
-        QRVA += insn.info.length;
-        QRunAddr += insn.info.length;
-        std::println("{}", GetInstructionDetailsString(insn));
+        FileOffset += inst.info.length;
+        RuntimeAddr += inst.info.length;
     }
 
     if (failed) {
@@ -190,58 +214,87 @@ GetJccInstruction(uint64_t QRVA, uint64_t QRunAddr, const std::span<uint8_t> Cod
         return std::nullopt;
     }
 
-    DoBasicClean(BlockMap[startAddress]);
-
-    return insn;
+    return optInst;
 }
 
-void DoAnalyze(uint64_t SegRVA, uint64_t RuntimeAddress, const std::span<uint8_t> Code) {
-    BranchQueue.emplace(SegRVA, RuntimeAddress, 0);
-    const auto diffRVARuntime = RuntimeAddress - SegRVA;
+void DoAnalyze(RuntimeAddressType StartAddr, RuntimeAddressType SegmentAddr, const std::span<uint8_t> Code) {
+    BranchQueue.emplace(StartAddr - SegmentAddr, StartAddr, 0);
 
     for (; !BranchQueue.empty();) {
-        auto [blockStartRVA, blockStartRuntimeAddr, branch_id] = BranchQueue.front();
+        auto [fileOffset, runtimeAddr, branchId] = BranchQueue.front();
         BranchQueue.pop();
-        std::println("[process]: {} start, remain: {}", branch_id, BranchQueue.size());
+        std::println("[process]: {} start, remain: {}", branchId, BranchQueue.size());
 
         // check traveled address
-        if (std::ranges::contains(traveledAddress, blockStartRuntimeAddr)) {
-            std::println("already traveled: 0x{:016X}", blockStartRuntimeAddr);
+        if (std::ranges::contains(traveledAddress, runtimeAddr)) {
+            std::println("already traveled: 0x{:016X}", runtimeAddr);
             continue;
         }
-        traveledAddress.emplace_back(blockStartRuntimeAddr);
+        traveledAddress.emplace_back(runtimeAddr);
 
         // make branch
-        if (auto insnOpt = GetJccInstruction(blockStartRVA, blockStartRuntimeAddr, Code);
-            insnOpt.has_value()) {
-            auto &insn = insnOpt.value();
+        if (auto optInst = SkipUntilJccInst(fileOffset, runtimeAddr, Code);
+            optInst.has_value()) {
+            auto &inst       = optInst.value();
+            auto  targetAddr = GetJccTargetAddress(inst);
+
+            // check jz and jnz to same address
+            while (inst.info.mnemonic == ZYDIS_MNEMONIC_JZ) {
+                auto optInstNext = GetInst(inst.runtime_address + inst.info.length - SegmentAddr, inst.runtime_address + inst.info.length, Code);
+                if (!optInstNext) {
+                    break;
+                }
+                auto &instNext = optInstNext.value();
+                if (instNext.info.mnemonic != ZYDIS_MNEMONIC_JNZ) {
+                    break;
+                }
+
+                auto targetAddrNext = GetJccTargetAddress(instNext);
+                if (targetAddrNext != targetAddr) {
+                    break;
+                }
+
+                BlockMap.at(runtimeAddr).emplace_back(instNext);
+                std::println("{}", GetInstructionDetailsString(instNext));
+                break;
+            }
+            DoBasicClean(BlockMap.at(runtimeAddr));
+            inst = BlockMap.at(runtimeAddr).back().Instruction;
+
+            std::println("----------------cleaned-------------------------------");
+            for (const auto &[Instruction, Bytes]: BlockMap.at(runtimeAddr)) {
+                std::println("{}", GetInstructionDetailsString(Instruction));
+            }
+            std::println("----------------cleaned-------------------------------");
+
 
             // add two branch blocks
-            auto jccAddress = insn.operands[0].imm.value.u + insn.info.length + insn.runtime_address;
-            std::println("[make branch] {}", ++BranchId);
-            BranchQueue.emplace(jccAddress - diffRVARuntime, jccAddress, BranchId);
-            if (IsJmp(insn)) {
+            std::println("[make branch] {} To 0x{:016X}", ++MaxBranchId, targetAddr);
+            BranchQueue.emplace(targetAddr - SegmentAddr, targetAddr, MaxBranchId);
+            if (IsJmp(inst)) {
                 continue;
             }
-            std::println("[make branch] {}", ++BranchId);
-            BranchQueue.emplace(insn.runtime_address + insn.info.length - diffRVARuntime, insn.runtime_address + insn.info.length, BranchId);
+            std::println("[make branch] {} To 0x{:016X}", ++MaxBranchId, inst.runtime_address + inst.info.length);
+            BranchQueue.emplace(inst.runtime_address + inst.info.length - SegmentAddr, inst.runtime_address + inst.info.length, MaxBranchId);
         }
+
+        assert("no jcc instruction");
     }
 
     for (auto &[k, v]: BlockMap) {
         std::println("block: 0x{:016X}", k);
-        for (auto &insn: v) {
-            std::println("{}", GetInstructionDetailsString(insn));
+        for (auto &[Instruction, Bytes]: v) {
+            std::println("{}", GetInstructionDetailsString(Instruction));
         }
     }
 }
 
-std::vector<uint8_t> DoPatch(uint64_t Offset, const std::span<uint8_t> Code) {
-    std::vector<uint8_t> newData(Code.size(), 0x90);
+BytesType DoPatch(FileOffsetType SegmentBegin, const std::span<uint8_t> Code) {
+    BytesType newData(Code.size(), 0x90);
     for (auto &[k, v]: BlockMap) {
-        for (auto &insn: v) {
-            for (int i = 0; i < insn.info.length; ++i) {
-                newData[insn.runtime_address - Offset + i] = Code[insn.runtime_address - Offset + i];
+        for (auto &[inst, bytes]: v) {
+            for (int i = 0; i < inst.info.length; ++i) {
+                newData[inst.runtime_address - SegmentBegin + i] = bytes[i];
             }
         }
     }
@@ -268,10 +321,9 @@ int main(int argc, char *argv[]) {
     // setting global encoding utf-8
     std::locale::global(std::locale("zh_CN.UTF-8"));
 
-    auto               buffer = ReadFileBinary("text.bin");
+    auto               buffer = ReadFileBinary("D:/我的文件/IDM/下载文件-IDM/destination - 副本_00411000text.bin");
     std::span<uint8_t> Code(reinterpret_cast<uint8_t *>(buffer.data()), buffer.size());
-    DoAnalyze(0x140D7 - /* PE + .textbss size */ (0x1000 + 0x10000), 0x004140D7, Code);
-
+    DoAnalyze(0x004140D7, 0x00411000, Code);
 
     writeFile("deeeeee.bin", DoPatch(0x00411000, Code));
 }

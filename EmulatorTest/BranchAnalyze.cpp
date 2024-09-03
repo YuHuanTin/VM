@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <map>
+#include <numeric>
 #include <print>
 #include <ranges>
 #include <unicorn/unicorn.h>
@@ -55,9 +56,15 @@ DR7 : 00000000
 )"
 
 
-std::vector<ZydisDisassembledInstruction>                      GlobalInstructions;
-std::vector<std::vector<uint8_t> >                             GlobalInstructionBytes;
-std::map<uint64_t, std::vector<ZydisDisassembledInstruction> > GlobalInstructionBranch;
+std::vector<ZydisDisassembledInstruction> GlobalInstructions;
+std::vector<std::vector<uint8_t> >        GlobalInstructionBytes;
+
+struct InstructionWithData {
+    ZydisDisassembledInstruction Instruction;
+    std::vector<uint8_t>         Bytes;
+};
+
+std::map<uint64_t, std::vector<InstructionWithData> > GlobalInstructionBranch;
 
 std::string GetRegisterNameByEnum(const ZydisRegister Index) {
     auto registerName = std::string { NAMEOF_ENUM(Index) };
@@ -92,13 +99,13 @@ std::string GetInstructionDetailsString(ZydisDisassembledInstruction &Instructio
     return std::format("[0x{:016X}]: {:<32s}, {}", Instruction.runtime_address, Instruction.text, detailInfo);
 }
 
-auto IsJcc(const ZydisDisassembledInstruction &Insn) {
-    if (Insn.text[0] != 'j') {
+auto IsJcc(const ZydisDisassembledInstruction &Inst) {
+    if (Inst.text[0] != 'j') {
         return false;
     }
-    const auto total = Insn.info.operand_count;
+    const auto total = Inst.info.operand_count;
     for (int i = 0; i < total; i++) {
-        if (Insn.operands[i].reg.value == ZYDIS_REGISTER_EFLAGS) {
+        if (Inst.operands[i].reg.value == ZYDIS_REGISTER_EFLAGS) {
             return true;
         }
     }
@@ -112,21 +119,43 @@ void BranchAnalyze() {
     bool                  hasMultiBranch = false;
     uint64_t              begin          = GlobalInstructions.at(0).runtime_address;
     std::vector<uint64_t> okAddr;
-    for (auto &GlobalInstruction: GlobalInstructions) {
+    for (int i = 0; i < GlobalInstructions.size(); i++) {
+        auto &GlobalInstruction     = GlobalInstructions.at(i);
+        auto &GlobalInstructionByte = GlobalInstructionBytes.at(i);
+
         if (hasMultiBranch) {
             begin          = GlobalInstruction.runtime_address;
             hasMultiBranch = false;
         }
         if (!IsJcc(GlobalInstruction)) {
             if (!std::ranges::contains(okAddr, begin)) {
-                GlobalInstructionBranch[begin].emplace_back(GlobalInstruction);
+                GlobalInstructionBranch[begin].emplace_back(GlobalInstruction, GlobalInstructionByte);
             }
             continue;
         }
 
         // assume jz, then have two branches, emulator will choose one of and run, so we just pass to next instruction and log address as new branch
         if (!std::ranges::contains(okAddr, begin)) {
-            GlobalInstructionBranch[begin].emplace_back(GlobalInstruction);
+            // change jcc offset
+            uint64_t blockLen = 0;
+            if (GlobalInstructionBranch.contains(begin)) {
+                std::ranges::for_each(GlobalInstructionBranch.at(begin), [&blockLen](auto &branch) {
+                    blockLen += branch.Instruction.info.length;
+                });
+            }
+            
+            uint64_t targetRuntimeAddress             = GlobalInstruction.runtime_address + GlobalInstruction.info.length + GlobalInstruction.operands[0].imm.value.u;
+            uint64_t newOffset                        = targetRuntimeAddress - (begin + blockLen + GlobalInstruction.info.length);
+            // GlobalInstruction.operands[0].imm.value.u = newOffset;
+
+            assert(GlobalInstructionByte.size() == 6 && "Jcc instruction length should be 6 bytes? ( near jcc is never used )");
+
+            GlobalInstructionByte[2] = newOffset & 0xFF;
+            GlobalInstructionByte[3] = (newOffset >> 8) & 0xFF;
+            GlobalInstructionByte[4] = (newOffset >> 16) & 0xFF;
+            GlobalInstructionByte[5] = (newOffset >> 24) & 0xFF;
+
+            GlobalInstructionBranch[begin].emplace_back(GlobalInstruction, GlobalInstructionByte);
         }
         hasMultiBranch = true;
         okAddr.emplace_back(begin);
@@ -134,15 +163,32 @@ void BranchAnalyze() {
 
     for (auto &[k, v]: GlobalInstructionBranch) {
         std::println("branch address: 0x{:016X}", k);
-        for (int i = 0; i < v.size(); i++) {
-            std::println("{}", GetInstructionDetailsString(v.at(i)));
-
-            if (i == v.size() - 1 && IsJcc(v.at(i))) {
-                std::println("branch 1 -> {:016X}", v.at(i).runtime_address + v.at(i).info.length + v.at(i).operands[0].imm.value.u);
-                std::println("branch 2 -> {:016X}", v.at(i).runtime_address + v.at(i).info.length);
+        int i = 0;
+        for (i = 0; i < v.size(); i++) {
+            std::println("{}", GetInstructionDetailsString(v.at(i).Instruction));
+        }
+        for (i = 0; i < v.size(); i++) {
+            for (int j = 0; j < v.at(i).Bytes.size(); j++) {
+                std::print("{:02X} ", v.at(i).Bytes.at(j));
             }
         }
+        std::println("");
+
+        i--;
+
+        if (IsJcc(v.at(i).Instruction)) {
+            std::println("branch 1 -> {:016X}", v.at(i).Instruction.runtime_address + v.at(i).Instruction.info.length + v.at(i).Instruction.operands[0].imm.value.u);
+            std::println("branch 2 -> {:016X}", v.at(i).Instruction.runtime_address + v.at(i).Instruction.info.length);
+        }
     }
+    // for (auto &[k, v]: GlobalInstructionBranch) {
+    //     for (int i = 0; i < v.size(); i++) {
+    //         for (int j = 0; j < v.at(i).Bytes.size(); j++) {
+    //             std::print("{:02X} ", v.at(i).Bytes.at(j));
+    //         }
+    //     }
+    //     std::println("");
+    // }
 }
 
 void DoAnalyze(const X86Emulator *Emulator) {
@@ -212,7 +258,7 @@ void DoAnalyze(const X86Emulator *Emulator) {
     }
 }
 
-int main(int argc, char *argv[]) {
+int main() {
     // disable output buffering
     setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -225,7 +271,7 @@ int main(int argc, char *argv[]) {
     // RipperMemoryDumper rip(PROCESS_ID, DUMP_FILE_DIR);
     // rip.DumpMemory(DUMP_BEGIN, DUMP_END);
     RapidMemoryLoader<SEG_MAP_MEM_X86> loader(DUMP_FILE_DIR);
-    loader.AppendMoreSegs<SEG_MAP_X86>({ 0x0019D000, 0x00003000, "D:/我的文件/IDM/下载文件-IDM/destination - 副本_0019D000.bin" });
+    loader.AppendMoreSegs<SEG_MAP_X86>({ 0x0019D000, 0x00003000, "destination - 副本_0019D000.bin" });
 
     const REGS_X86 parsedRegs = ParseRegisterString_X86(REGISTER_PARSER_STR);
     X86Emulator    emulator { parsedRegs };
@@ -238,14 +284,6 @@ int main(int argc, char *argv[]) {
 
         std::println("-------------------------------------end -------------------------------------");
         BranchAnalyze();
-
-        // for (auto &branch: GlobalInstructionBranch) {
-        //     std::println("[0x{:016X}]", branch.first);
-        //     for (auto &GlobalInstruction: branch.second) {
-        //         std::println("{}", GetInstructionDetailsString(GlobalInstruction));
-        //     }
-        //     std::println("");
-        // }
     } catch (std::exception &Exception) {
         std::println("Exception: {}", Exception.what());
     }

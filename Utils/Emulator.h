@@ -5,10 +5,12 @@
 #ifndef EMULATOR_H
 #define EMULATOR_H
 
+
 #include <filesystem>
 #include <functional>
 
 #include "def.h"
+#include "unicorn/unicorn.h"
 
 class X64Emulator {
     int reg_batch_[18] = {
