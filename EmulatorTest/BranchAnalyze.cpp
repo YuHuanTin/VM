@@ -143,9 +143,9 @@ void BranchAnalyze() {
                     blockLen += branch.Instruction.info.length;
                 });
             }
-            
-            uint64_t targetRuntimeAddress             = GlobalInstruction.runtime_address + GlobalInstruction.info.length + GlobalInstruction.operands[0].imm.value.u;
-            uint64_t newOffset                        = targetRuntimeAddress - (begin + blockLen + GlobalInstruction.info.length);
+
+            uint64_t targetRuntimeAddress = GlobalInstruction.runtime_address + GlobalInstruction.info.length + GlobalInstruction.operands[0].imm.value.u;
+            uint64_t newOffset            = targetRuntimeAddress - (begin + blockLen + GlobalInstruction.info.length);
             // GlobalInstruction.operands[0].imm.value.u = newOffset;
 
             assert(GlobalInstructionByte.size() == 6 && "Jcc instruction length should be 6 bytes? ( near jcc is never used )");

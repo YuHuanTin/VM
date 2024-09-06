@@ -3,8 +3,8 @@
 #include <chrono>
 #include <map>
 #include <print>
-#include <queue>
 #include <ranges>
+#include <stack>
 #include <Zydis/Zydis.h>
 
 #include "../Utils/Emulator.h"
@@ -13,29 +13,32 @@
 using RuntimeAddressType = uint64_t;
 using FileOffsetType     = uint64_t;
 using BytesType          = std::vector<uint8_t>;
+using BranchIdType       = uint64_t;
 
 extern ZydisDisassembledInstruction GetInstFromBytes(std::span<uint8_t> Bytes, RuntimeAddressType RuntimeAddr);
 
 extern RuntimeAddressType GetJccTargetAddress(const ZydisDisassembledInstruction &Inst);
-
-struct BranchInfo {
-    FileOffsetType     file_offset_;
-    RuntimeAddressType runtime_address_;
-    uint64_t           branch_id_;
-};
 
 struct InstructionWithData {
     ZydisDisassembledInstruction Instruction;
     BytesType                    Bytes;
 };
 
+struct BranchInfo {
+    BranchIdType       branch_id_       = 0;
+    FileOffsetType     file_offset_     = 0;
+    RuntimeAddressType runtime_address_ = 0;
+};
+
+struct TraveledInfo {
+    bool               has_target_jmp_  = false;
+    RuntimeAddressType runtime_address_ = 0;
+    RuntimeAddressType target_addr_     = 0;
+};
+
 uint64_t MaxBranchId = 0;
 
-std::queue<BranchInfo> BranchQueue;
-
 std::map<RuntimeAddressType, std::vector<InstructionWithData> > BlockMap;
-
-std::vector<RuntimeAddressType> traveledAddress;
 
 std::string GetInstructionDetailsString(const ZydisDisassembledInstruction &Inst) {
     return std::format("[0x{:016X}]: {:<32s}", Inst.runtime_address, Inst.text);
@@ -104,6 +107,10 @@ void DoBasicClean(std::vector<InstructionWithData> &InstWithData) {
     for (int i = 0; i < InstWithData.size(); ++i) {
         const auto &[inst, bytes] = InstWithData.at(i);
 
+        // remove like this
+        // call [eip+5]
+        // add [esp], 5
+        // ret
         while (inst.info.mnemonic == ZYDIS_MNEMONIC_RET) {
             const int indexCall = i - 2; // call xxxx
             if (indexCall < 0) {
@@ -122,6 +129,11 @@ void DoBasicClean(std::vector<InstructionWithData> &InstWithData) {
             break;
         }
 
+        // replace like this
+        // jnz 0x10000000
+        // jz  0x10000000
+        // with
+        // jmp 0x10000000
         while (inst.info.mnemonic == ZYDIS_MNEMONIC_JNZ) {
             int indexJz = i - 1; // jz xxxx
             if (indexJz < 0) {
@@ -201,7 +213,7 @@ SkipUntilJccInst(FileOffsetType FileOffset, RuntimeAddressType RuntimeAddr, cons
             break;
         }
 
-        std::println("{}", GetInstructionDetailsString(inst));
+        // std::println("{}", GetInstructionDetailsString(inst));
         if (IsJcc(inst)) {
             break;
         }
@@ -210,7 +222,6 @@ SkipUntilJccInst(FileOffsetType FileOffset, RuntimeAddressType RuntimeAddr, cons
     }
 
     if (failed) {
-        BlockMap.erase(startAddress);
         return std::nullopt;
     }
 
@@ -218,74 +229,102 @@ SkipUntilJccInst(FileOffsetType FileOffset, RuntimeAddressType RuntimeAddr, cons
 }
 
 void DoAnalyze(RuntimeAddressType StartAddr, RuntimeAddressType SegmentAddr, const std::span<uint8_t> Code) {
-    BranchQueue.emplace(StartAddr - SegmentAddr, StartAddr, 0);
+    // step1 get all branch, split by jcc instruction
+    std::vector<TraveledInfo> traveled;
+    std::stack<BranchInfo>    branchStack;
+    branchStack.push({ 0, StartAddr - SegmentAddr, StartAddr });
+    for (; !branchStack.empty();) {
+        auto [branch_id_, file_offset_, runtime_address_] = branchStack.top();
+        branchStack.pop();
 
-    for (; !BranchQueue.empty();) {
-        auto [fileOffset, runtimeAddr, branchId] = BranchQueue.front();
-        BranchQueue.pop();
-        std::println("[process]: {} start, remain: {}", branchId, BranchQueue.size());
+        std::println("[process]: {} start, remain: {}", branch_id_, branchStack.size());
 
         // check traveled address
-        if (std::ranges::contains(traveledAddress, runtimeAddr)) {
-            std::println("already traveled: 0x{:016X}", runtimeAddr);
+        if (std::ranges::find_if(traveled, [&runtime_address_](const TraveledInfo &info) {
+            return info.runtime_address_ == runtime_address_;
+        }) != traveled.end()) {
+            std::println("already traveled: jmp 0x{:016X}", runtime_address_);
+            traveled.emplace_back(true, 0, runtime_address_);
             continue;
         }
-        traveledAddress.emplace_back(runtimeAddr);
+        traveled.emplace_back(false, runtime_address_, 0);
 
-        // make branch
-        if (auto optInst = SkipUntilJccInst(fileOffset, runtimeAddr, Code);
-            optInst.has_value()) {
-            auto &inst       = optInst.value();
-            auto  targetAddr = GetJccTargetAddress(inst);
+        // emulate instruction until jcc
+        // make new branch from jcc
+        auto optInst = SkipUntilJccInst(file_offset_, runtime_address_, Code);
+        if (!optInst) {
+            // if 'SkipUntilJccInst' failed, remove this block, remove traveled address
+            BlockMap.erase(runtime_address_);
+            traveled.pop_back(); // not care
+            continue;
+        }
+        auto &inst       = optInst.value();
+        auto  targetAddr = GetJccTargetAddress(inst);
 
-            // check jz and jnz to same address
-            while (inst.info.mnemonic == ZYDIS_MNEMONIC_JZ) {
-                auto optInstNext = GetInst(inst.runtime_address + inst.info.length - SegmentAddr, inst.runtime_address + inst.info.length, Code);
-                if (!optInstNext) {
-                    break;
-                }
-                auto &instNext = optInstNext.value();
-                if (instNext.info.mnemonic != ZYDIS_MNEMONIC_JNZ) {
-                    break;
-                }
-
-                auto targetAddrNext = GetJccTargetAddress(instNext);
-                if (targetAddrNext != targetAddr) {
-                    break;
-                }
-
-                BlockMap.at(runtimeAddr).emplace_back(instNext);
-                std::println("{}", GetInstructionDetailsString(instNext));
+        // check jz and jnz to same address
+        while (inst.info.mnemonic == ZYDIS_MNEMONIC_JZ) {
+            auto optInstNext = GetInst(inst.runtime_address + inst.info.length - SegmentAddr, inst.runtime_address + inst.info.length, Code);
+            if (!optInstNext) {
                 break;
             }
-            DoBasicClean(BlockMap.at(runtimeAddr));
-            inst = BlockMap.at(runtimeAddr).back().Instruction;
-
-            std::println("----------------cleaned-------------------------------");
-            for (const auto &[Instruction, Bytes]: BlockMap.at(runtimeAddr)) {
-                std::println("{}", GetInstructionDetailsString(Instruction));
+            auto &instNext = optInstNext.value();
+            if (instNext.info.mnemonic != ZYDIS_MNEMONIC_JNZ) {
+                break;
             }
-            std::println("----------------cleaned-------------------------------");
 
-
-            // add two branch blocks
-            std::println("[make branch] {} To 0x{:016X}", ++MaxBranchId, targetAddr);
-            BranchQueue.emplace(targetAddr - SegmentAddr, targetAddr, MaxBranchId);
-            if (IsJmp(inst)) {
-                continue;
+            auto targetAddrNext = GetJccTargetAddress(instNext);
+            if (targetAddrNext != targetAddr) {
+                break;
             }
-            std::println("[make branch] {} To 0x{:016X}", ++MaxBranchId, inst.runtime_address + inst.info.length);
-            BranchQueue.emplace(inst.runtime_address + inst.info.length - SegmentAddr, inst.runtime_address + inst.info.length, MaxBranchId);
+
+            BlockMap.at(runtime_address_).emplace_back(instNext);
+            break;
         }
+        DoBasicClean(BlockMap.at(runtime_address_));
+        inst = BlockMap.at(runtime_address_).back().Instruction;
 
-        assert("no jcc instruction");
-    }
-
-    for (auto &[k, v]: BlockMap) {
-        std::println("block: 0x{:016X}", k);
-        for (auto &[Instruction, Bytes]: v) {
+        std::println("----------------cleaned-------------------------------");
+        for (const auto &[Instruction, Bytes]: BlockMap.at(runtime_address_)) {
             std::println("{}", GetInstructionDetailsString(Instruction));
         }
+        std::println("----------------cleaned end---------------------------");
+
+        // add two branch blocks
+        std::println("[make branch] {} To 0x{:016X}", ++MaxBranchId, targetAddr);
+        branchStack.emplace(MaxBranchId, targetAddr - SegmentAddr, targetAddr);
+        if (IsJmp(inst)) {
+            continue;
+        }
+        std::println("[make branch] {} To 0x{:016X}", ++MaxBranchId, inst.runtime_address + inst.info.length);
+        branchStack.emplace(MaxBranchId, inst.runtime_address + inst.info.length - SegmentAddr, inst.runtime_address + inst.info.length);
+    }
+
+
+    // step2, map all addr from 'traveled', merge all instruction(remove jmp)
+    // rebuild control flow
+    // WARN, more jmp inst will be generated
+    BytesType newdata;
+    uint64_t  offsetOfNewInst = 0;
+    for (auto [has_target_jmp_, runtime_address_, target_addr_]: traveled) {
+        if (has_target_jmp_) {
+            newdata.insert(newdata.end(), { 0xe9, 0x00, 0x00, 0x00, 0x00 });
+            std::println("jmp 0x{:016X}", target_addr_);
+            continue;
+        }
+        for (auto  addr_ = runtime_address_;
+             auto &[inst, bytes]: BlockMap.at(addr_)) {
+            if (IsJmp(inst)) {
+                addr_ = GetJccTargetAddress(inst);
+                continue;
+            }
+            std::println("{}", GetInstructionDetailsString(inst));
+            for (int i = 0; i < inst.info.length; ++i) {
+                newdata.emplace_back(bytes[i]);
+            }
+        }
+    }
+    for (unsigned char & i : newdata) {
+        std::print("{:02X} ", i);
     }
 }
 
