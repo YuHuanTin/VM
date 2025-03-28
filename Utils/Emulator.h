@@ -14,6 +14,34 @@
 
 template<typename T>
 class Emulator {
+    friend T;
+
+    Emulator() = default;
+
+    void RunInner(this auto &&self) {
+        auto CurrentIP = self.GetCurrentIP();
+        if (self.observers_.contains(CurrentIP)) {
+            self.ReadRegsSyncCheck();
+            self.observers_[CurrentIP](&self);
+            self.WriteRegsSyncCheck();
+        }
+        if (self.observers_.contains(0)) {
+            self.ReadRegsSyncCheck();
+            self.observers_[0](&self);
+            self.WriteRegsSyncCheck();
+        }
+
+        if (const auto err = uc_emu_start(self.uc_, CurrentIP, 0xffffffffffffffff, 0, 1);
+            err != UC_ERR_OK) {
+            std::println("Exception with error returned {}: {}",
+                static_cast<unsigned int>(err), uc_strerror(err));
+            self.PrintRegs();
+            self.PrintStack();
+            throw std::runtime_error("error!");
+        }
+        self.ReadRegs();
+    }
+
 public:
     virtual ~Emulator() = default;
 
@@ -24,11 +52,23 @@ public:
         CHECK_ERR(uc_reg_write_batch(self.uc_, self.reg_batch_, self.reg_value_batch_, std::size(self.reg_value_batch_)));
     }
 
+    void WriteRegsSyncCheck(this auto &&self) {
+        if (self.optional_AutoAutoSyncRegs_) {
+            self.WriteRegs();
+        }
+    }
+
     /**
      * 读取所有寄存器的值，写到 regs_
      */
     void ReadRegs(this auto &&self) {
         CHECK_ERR(uc_reg_read_batch(self.uc_, self.reg_batch_, self.reg_value_batch_, std::size(self.reg_value_batch_)));
+    }
+
+    void ReadRegsSyncCheck(this auto &&self) {
+        if (self.optional_AutoAutoSyncRegs_) {
+            self.ReadRegs();
+        }
     }
 
     template<ReqMemLoaderable SEG_MAP_MEM_MODE>
@@ -45,6 +85,16 @@ public:
 
             if (self.optional_DetailOutput_)
                 std::println("Segment [0x{:x}, 0x{:x}]", base_, base_ + size_);
+        }
+    }
+
+    template<typename NumberType>
+    void Run(this auto &&self, NumberType Until, const bool RunNextWhenUntil = false) {
+        while (self.GetCurrentIP() != Until) {
+            self.RunInner();
+        }
+        if (RunNextWhenUntil) {
+            self.RunInner();
         }
     }
 };
@@ -112,7 +162,9 @@ public:
             regs_.rip_, regs_.rflags_);
     }
 
-    void PrintStack(uint64_t Rsp) {
+    void PrintStack() const {
+        uint64_t Rsp = regs_.rsp_;
+
         uint64_t val;
         for (int i = 0; i < 10; i++) {
             uc_mem_read(uc_, Rsp, &val, 8);
@@ -125,38 +177,11 @@ public:
         observers_[ObserverAddress] = Observer;
     }
 
-    void Run(const uint64_t Until = 0xFFFFFFFFFFFFFFFF) {
-        for (; regs_.rip_ != Until;) {
-            if (observers_.contains(regs_.rip_)) {
-                if (optional_AutoAutoSyncRegs_)
-                    ReadRegs();
-                observers_.at(regs_.rip_)(this);
-                if (optional_AutoAutoSyncRegs_)
-                    WriteRegs();
-            }
-            if (observers_.contains(0)) {
-                if (optional_AutoAutoSyncRegs_)
-                    ReadRegs();
-                observers_[0](this);
-                if (optional_AutoAutoSyncRegs_)
-                    WriteRegs();
-            }
-
-            if (const auto err = uc_emu_start(uc_, regs_.rip_, 0xffffffffffffffff, 0, 1);
-                err != UC_ERR_OK) {
-                std::println("Exception with error returned {}: {}",
-                    static_cast<unsigned int>(err), uc_strerror(err));
-                PrintRegs();
-                PrintStack(regs_.rsp_);
-                throw std::runtime_error("error!");
-            }
-
-            CHECK_ERR(uc_reg_read(uc_, UC_X86_REG_RIP, &regs_.rip_));
-        }
-        ReadRegs();
+    [[nodiscard]] auto GetCurrentIP() const {
+        return regs_.rip_;
     }
 
-    ~X64Emulator() {
+    ~X64Emulator() override {
         uc_close(uc_);
     }
 };
@@ -176,7 +201,7 @@ class X86Emulator : public Emulator<X86Emulator> {
     };
 
     // 保留 0 作为所有代码的观察者
-    std::unordered_map<uint64_t, std::function<void(X86Emulator *)> > observers_;
+    std::unordered_map<uint32_t, std::function<void(X86Emulator *)> > observers_;
 
 public:
     uc_engine *uc_ { nullptr };
@@ -215,7 +240,9 @@ public:
             regs_.eip_, regs_.eflags_);
     }
 
-    void PrintStack(uint32_t Esp) {
+    void PrintStack() const {
+        uint32_t Esp = regs_.esp_;
+
         uint32_t val;
         for (int i = 0; i < 10; i++) {
             uc_mem_read(uc_, Esp, &val, 4);
@@ -224,42 +251,15 @@ public:
         }
     }
 
-    void RegisterObserver(const uint64_t ObserverAddress, std::function<void(X86Emulator *)> &&Observer) {
+    void RegisterObserver(const uint32_t ObserverAddress, std::function<void(X86Emulator *)> &&Observer) {
         observers_[ObserverAddress] = Observer;
     }
 
-    void Run(const uint32_t Until = 0xFFFFFFFF) {
-        for (; regs_.eip_ != Until;) {
-            if (observers_.contains(regs_.eip_)) {
-                if (optional_AutoAutoSyncRegs_)
-                    ReadRegs();
-                observers_.at(regs_.eip_)(this);
-                if (optional_AutoAutoSyncRegs_)
-                    WriteRegs();
-            }
-            if (observers_.contains(0)) {
-                if (optional_AutoAutoSyncRegs_)
-                    ReadRegs();
-                observers_[0](this);
-                if (optional_AutoAutoSyncRegs_)
-                    WriteRegs();
-            }
-
-            if (const auto err = uc_emu_start(uc_, regs_.eip_, 0xffffffff, 0, 1);
-                err != UC_ERR_OK) {
-                std::println("Exception with error returned {}: {}",
-                    static_cast<unsigned int>(err), uc_strerror(err));
-                PrintRegs();
-                PrintStack(regs_.esp_);
-                throw std::runtime_error("error!");
-            }
-
-            CHECK_ERR(uc_reg_read(uc_, UC_X86_REG_EIP, &regs_.eip_));
-        }
-        ReadRegs();
+    [[nodiscard]] auto GetCurrentIP() const {
+        return regs_.eip_;
     }
 
-    ~X86Emulator() {
+    ~X86Emulator() override {
         uc_close(uc_);
     }
 };

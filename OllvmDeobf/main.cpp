@@ -45,7 +45,8 @@ std::vector<std::pair<uint64_t, uint64_t> > true_block {
     { 4204030, 4204040 }, { 4204045, 4204067 }, { 4204072, 4204091 }, { 4204096, 4204118 }, { 4204123, 4204133 }, { 4204138, 4204171 }
 };
 
-std::vector<std::pair<uint64_t, uint64_t> > trace_block;
+// start addr, end addr, zflag
+std::vector<std::tuple<uint64_t, uint64_t, uint8_t> > trace_block;
 
 bool hook_mem_unmapped(
     uc_engine * uc,
@@ -72,13 +73,15 @@ bool hook_call_inst(
     // 获取当前的指令 ip
     size_t rip;
     CHECK_ERR(uc_reg_read(uc, UC_X86_REG_RIP, &rip));
+    size_t flag;
+    CHECK_ERR(uc_reg_read(uc, UC_X86_REG_RFLAGS, &flag));
 
     // 判断是否为 true_block 开头
     const auto it = std::ranges::find_if(true_block, [rip](const auto &v) {
-        return v.first == rip;
+        return v.second == rip;
     });
     if (it != true_block.end()) {
-        trace_block.emplace_back(*it);
+        trace_block.emplace_back(it->first, it->second, static_cast<uint8_t>((flag >> 6) & 1));
         true_block.erase(it);
     }
 
@@ -117,7 +120,7 @@ int main() {
         uc_hook_add(x64_emulator.uc_, &passCall, UC_HOOK_CODE, hook_call_inst, nullptr, 1, 0);
 
         x64_emulator.LoadSegments(loader.GetSegMap());
-        x64_emulator.Run(0x0000000000402696);
+        x64_emulator.Run(0x0000000000402696, true);
     } catch (std::exception &Exception) {
         std::println("{}", Exception.what());
     }
