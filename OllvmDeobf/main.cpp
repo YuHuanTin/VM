@@ -45,8 +45,13 @@ std::vector<std::pair<uint64_t, uint64_t> > true_block {
     { 4204030, 4204040 }, { 4204045, 4204067 }, { 4204072, 4204091 }, { 4204096, 4204118 }, { 4204123, 4204133 }, { 4204138, 4204171 }
 };
 
-// start addr, end addr, zflag
-std::vector<std::tuple<uint64_t, uint64_t, uint8_t> > trace_block;
+struct traceBlockInfo {
+    uint64_t startAddr;
+    uint64_t endAddr;
+    uint8_t  zflag;
+};
+
+std::vector<traceBlockInfo> trace_block;
 
 bool hook_mem_unmapped(
     uc_engine * uc,
@@ -126,5 +131,8 @@ int main() {
     }
 
     std::println("{}", true_block);
-    std::println("{}", trace_block);
+    // std::println("{}", trace_block);
+    for (auto &[start,end,zf]: trace_block) {
+        std::print("(({},{}),{}), ", start, end, zf);
+    }
 }
