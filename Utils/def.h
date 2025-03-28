@@ -14,6 +14,33 @@
 #include <nameof.hpp>
 #include <Zydis/Zydis.h>
 
+template<typename T>
+concept ReqFileLoaderable = requires(T t) {
+    t.base;
+    t.size;
+    t.file_name;
+};
+
+template<typename T>
+concept ReqMemLoaderable = requires(T t) {
+    t.base_;
+    t.size_;
+    t.buffer_;
+};
+
+
+struct SEG_MAP {
+    uint64_t         base;
+    uint64_t         size;
+    std::string_view file_name;
+};
+
+struct SEG_MAP_X86 {
+    uint32_t         base;
+    uint32_t         size;
+    std::string_view file_name;
+};
+
 struct SEG_MAP_MEM {
     uint64_t    base_;
     uint64_t    size_;
@@ -151,15 +178,28 @@ namespace REGISTER_ORDER {
         throw std::runtime_error(std::format("Failed on uc_{} with error returned: {}", __func__, static_cast<unsigned int>(RETURN_VALUE))); \
     }
 
-inline std::string ReadFileBinary(std::string_view FileName) {
-    std::fstream fs { FileName.data(), std::ios::in | std::ios::binary };
-    fs.seekg(0, std::ios::end);
-    const auto length = fs.tellg();
-    fs.seekg(0, std::ios::beg);
+inline std::string ReadFileBinary(const std::string &FilePath, const bool CreateIfNotExist = false) {
+    std::fstream fs(FilePath, std::ios_base::in | std::ios_base::binary);
 
-    std::string buf(length, '\0');
-    fs.read(&buf[0], length);
-    return buf;
+    //不存在则创建
+    if (!fs.is_open() && CreateIfNotExist)
+        fs.open(FilePath, std::ios_base::out | std::ios_base::binary);
+
+    //还读取不了则返回空
+    if (!fs.is_open())
+        throw std::runtime_error("can't open file, maybe not exist or permission denied");
+
+    //获取文件大小
+    const auto begin = fs.tellg();
+    fs.seekg(0, std::ios_base::end);
+    const auto end = fs.tellg();
+    fs.seekg(0, std::ios_base::beg);
+
+    // 读取
+    std::string content;
+    content.resize(static_cast<size_t>(end - begin));
+    fs.read(content.data(), static_cast<std::streamsize>(content.size()));
+    return content;
 }
 
 #endif //DEF_H

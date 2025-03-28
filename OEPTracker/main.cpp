@@ -64,7 +64,7 @@ DR7 : 0000000000000405     L'Ѕ'
 
 )"
 
-int main(int argc, char *argv[]) {
+int main() {
     // disable output buffering
     setvbuf(stdout, nullptr, _IONBF, 0);
 

@@ -139,7 +139,7 @@ inline REGS_X86 ParseRegisterString_X86(const std::string &Str) {
             continue;
         }
 
-        const uint64_t value = std::stoull(registerValue, nullptr, 16);
+        const uint32_t value = std::stoul(registerValue, nullptr, 16);
         if (registerName == "EAX") {
             regs.eax_ = value;
         } else if (registerName == "EBX") {

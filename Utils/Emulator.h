@@ -12,7 +12,46 @@
 #include "def.h"
 #include "unicorn/unicorn.h"
 
-class X64Emulator {
+template<typename T>
+class Emulator {
+public:
+    virtual ~Emulator() = default;
+
+    /**
+     * 写入所有寄存器的值，从 regs_
+     */
+    void WriteRegs(this auto &&self) {
+        CHECK_ERR(uc_reg_write_batch(self.uc_, self.reg_batch_, self.reg_value_batch_, std::size(self.reg_value_batch_)));
+    }
+
+    /**
+     * 读取所有寄存器的值，写到 regs_
+     */
+    void ReadRegs(this auto &&self) {
+        CHECK_ERR(uc_reg_read_batch(self.uc_, self.reg_batch_, self.reg_value_batch_, std::size(self.reg_value_batch_)));
+    }
+
+    template<ReqMemLoaderable SEG_MAP_MEM_MODE>
+    void LoadSegments(this auto &&self, std::span<SEG_MAP_MEM_MODE> Segs) {
+        // map memory for this emulation
+        for (auto [base_, size_, buffer]: Segs) {
+            // assert(buffer.size() == size_ && "Segment size mismatch?");
+
+            // map memory for this emulation
+            CHECK_ERR(uc_mem_map(self.uc_, base_, size_, UC_PROT_ALL));
+
+            // write machine code to be emulated to memory
+            CHECK_ERR(uc_mem_write(self.uc_, base_, buffer.data(), buffer.size()));
+
+            if (self.optional_DetailOutput_)
+                std::println("Segment [0x{:x}, 0x{:x}]", base_, base_ + size_);
+        }
+    }
+};
+
+class X64Emulator : public Emulator<X64Emulator> {
+    friend Emulator;
+
     int reg_batch_[18] = {
         UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX,
         UC_X86_REG_RBP, UC_X86_REG_RSP, UC_X86_REG_RSI, UC_X86_REG_RDI,
@@ -37,19 +76,6 @@ public:
     bool       optional_AutoAutoSyncRegs_;
     bool       optional_DetailOutput_;
 
-    /**
-     * 写入所有寄存器的值，从 regs_
-    */
-    void WriteRegs() {
-        CHECK_ERR(uc_reg_write_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
-    }
-
-    /**
-     * 读取所有寄存器的值，写到 regs_
-     */
-    void ReadRegs() {
-        CHECK_ERR(uc_reg_read_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
-    }
 
     explicit X64Emulator(const REGS &Regs, const bool AutoSyncRegs = true, const bool RegisterInstructionOutput = true, const bool DetailOutput = true)
         : regs_(Regs), optional_AutoAutoSyncRegs_(AutoSyncRegs), optional_DetailOutput_(DetailOutput) {
@@ -70,22 +96,6 @@ public:
         }
 
         WriteRegs();
-    }
-
-    void LoadSegments(std::span<SEG_MAP_MEM> Segs) {
-        // map memory for this emulation
-        for (auto [base_, size_, buffer]: Segs) {
-            assert(buffer.size() == size_ && "Segment size mismatch?");
-
-            // map memory for this emulation
-            CHECK_ERR(uc_mem_map(uc_, base_, size_, UC_PROT_ALL));
-
-            // write machine code to be emulated to memory
-            CHECK_ERR(uc_mem_write(uc_, base_, buffer.data(), size_));
-
-            if (optional_DetailOutput_)
-                std::println("Segment [0x{:x}, 0x{:x}]", base_, base_ + size_);
-        }
     }
 
     void PrintRegs() {
@@ -151,7 +161,9 @@ public:
     }
 };
 
-class X86Emulator {
+class X86Emulator : public Emulator<X86Emulator> {
+    friend Emulator;
+
     int reg_batch_[10] = {
         UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX,
         UC_X86_REG_EBP, UC_X86_REG_ESP, UC_X86_REG_ESI, UC_X86_REG_EDI,
@@ -172,20 +184,6 @@ public:
     bool       optional_AutoAutoSyncRegs_;
     bool       optional_DetailOutput_;
 
-    /**
-     * 写入所有寄存器的值，从 regs_
-    */
-    void WriteRegs() {
-        CHECK_ERR(uc_reg_write_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
-    }
-
-    /**
-     * 读取所有寄存器的值，写到 regs_
-     */
-    void ReadRegs() {
-        CHECK_ERR(uc_reg_read_batch(uc_, reg_batch_, reg_value_batch_, std::size(reg_value_batch_)));
-    }
-
     explicit X86Emulator(const REGS_X86 &Regs, const bool AutoSyncRegs = true, const bool RegisterInstructionOutput = true, const bool DetailOutput = true)
         : regs_(Regs), optional_AutoAutoSyncRegs_(AutoSyncRegs), optional_DetailOutput_(DetailOutput) {
         CHECK_ERR(uc_open(UC_ARCH_X86, UC_MODE_32, &uc_));
@@ -205,22 +203,6 @@ public:
         }
 
         WriteRegs();
-    }
-
-    void LoadSegments(std::span<SEG_MAP_MEM_X86> Segs) {
-        // map memory for this emulation
-        for (auto [base_, size_, buffer]: Segs) {
-            assert(buffer.size() == size_ && "Segment size mismatch?");
-
-            // map memory for this emulation
-            CHECK_ERR(uc_mem_map(uc_, base_, size_, UC_PROT_ALL));
-
-            // write machine code to be emulated to memory
-            CHECK_ERR(uc_mem_write(uc_, base_, buffer.data(), size_));
-
-            if (optional_DetailOutput_)
-                std::println("Segment [0x{:x}, 0x{:x}]", base_, base_ + size_);
-        }
     }
 
     void PrintRegs() {
