@@ -3,17 +3,16 @@
 //
 
 #define NAMEOF_ENUM_RANGE_MAX ZYDIS_REGISTER_MAX_VALUE
-#include <algorithm>
-#include <map>
-#include <print>
-#include <ranges>
-#include <span>
-#include <unicorn/unicorn.h>
 #include <Zydis/Zydis.h>
+#include <nameof.hpp>
+#include <unicorn/unicorn.h>
 
-#include "../Utils/Emulator.h"
-#include "../Utils/RapidRegisterStringParser.h"
-
+import std;
+import RapidMemoryDumper;
+import RapidMemoryLoader;
+import RapidRegisterStringParser;
+import Emulator;
+import Def;
 
 #define REGISTER_PARSER_STR R"(
 RAX : 0000000000000001
@@ -71,11 +70,11 @@ SEG_MAP segs[] = {
 
 
 std::vector<ZydisDisassembledInstruction> GlobalInstructions;
-std::vector<std::vector<uint8_t> >        GlobalInstructionBytes;
+std::vector<std::vector<uint8_t>>         GlobalInstructionBytes;
 
 std::string GetRegisterNameByEnum(const ZydisRegister Index) {
     auto registerName = std::string { NAMEOF_ENUM(Index) };
-    std::ranges::for_each(registerName, [](char &r) { r = tolower(r); });
+    std::ranges::for_each(registerName, [](char &r) { r = std::tolower(r); });
     registerName = registerName.substr(registerName.find_last_of('_') + 1);
     return registerName;
 }
@@ -150,11 +149,11 @@ std::vector<RegisterWithAction> GetInstructionRegisterWithAction(const ZydisDisa
 
 /**
  * 获取所有只有写操作的 RegisterWithAction
- * @param RegisterWithActions 所有 RegisterWithAction 
+ * @param RegisterWithActions 所有 RegisterWithAction
  * @return 筛选出只有写操作的 RegisterWithAction
  */
 std::vector<RegisterWithAction> GetWriteOnlyRegisterWithAction(const std::vector<RegisterWithAction> &RegisterWithActions) {
-    std::map<REGISTER_ORDER::RegisterType, std::vector<RegisterWithAction> > table;
+    std::map<REGISTER_ORDER::RegisterType, std::vector<RegisterWithAction>> table;
 
     // 这里要处理类似于 mov eax, al 的情况，虽然是两个寄存器，但是是同一种类型的寄存器
     for (const auto [reg_, actions_]: RegisterWithActions) {
@@ -164,8 +163,8 @@ std::vector<RegisterWithAction> GetWriteOnlyRegisterWithAction(const std::vector
     std::vector<RegisterWithAction> result;
     for (const auto &[type, registers]: table) {
         if (std::ranges::any_of(registers, [](auto &reg_with_action) {
-            return reg_with_action.actions_ & ZYDIS_OPERAND_ACTION_MASK_READ;
-        })) {
+                return reg_with_action.actions_ & ZYDIS_OPERAND_ACTION_MASK_READ;
+            })) {
             continue;
         }
         result.insert_range(result.end(), registers);
@@ -181,7 +180,7 @@ std::vector<RegisterWithAction> GetWriteOnlyRegisterWithAction(const std::vector
  */
 void BackSearch(int Index, const ZydisRegister Register) {
     for (int i = Index - 1; i >= 0; --i) {
-        std::map<REGISTER_ORDER::RegisterType, std::vector<RegisterWithAction> > table;
+        std::map<REGISTER_ORDER::RegisterType, std::vector<RegisterWithAction>> table;
         for (auto [reg, action]: GetInstructionRegisterWithAction(GlobalInstructions.at(i))) {
             table[REGISTER_ORDER::RegToType.at(reg)].emplace_back(reg, action);
         }
@@ -212,7 +211,8 @@ void BackSearch(int Index, const ZydisRegister Register) {
                 if (GlobalInstructions.at(i).operands[j].reg.value == it->reg_ && GlobalInstructions.at(i).operands[j].actions & ZYDIS_OPERAND_ACTION_MASK_WRITE) {
                     GlobalInstructions.at(i).operands[j].actions &= ~ZYDIS_OPERAND_ACTION_MASK_WRITE;
                     std::println("from\t[{}]{}\n"
-                        "remove 'w' [{}]{}", Index, GetInstructionDetailsString(GlobalInstructions.at(Index)), i, GetInstructionDetailsString(GlobalInstructions.at(i)));
+                                 "remove 'w' [{}]{}",
+                        Index, GetInstructionDetailsString(GlobalInstructions.at(Index)), i, GetInstructionDetailsString(GlobalInstructions.at(i)));
                     break;
                 }
             }
@@ -253,8 +253,8 @@ void CleanJunkCode() {
                 continue;
             }
             if (std::ranges::all_of(regsWithAction, [](auto &reg_with_action) {
-                return (reg_with_action.actions_ & ZYDIS_OPERAND_ACTION_MASK_WRITE) == 0;
-            })) {
+                    return (reg_with_action.actions_ & ZYDIS_OPERAND_ACTION_MASK_WRITE) == 0;
+                })) {
                 std::println("{} remove[{}]: {}", __func__, incOnlyPos, GetInstructionDetailsString(GlobalInstructions.at(i)));
                 GlobalInstructions.erase(GlobalInstructions.begin() + i);
                 GlobalInstructionBytes.erase(GlobalInstructionBytes.begin() + i);
@@ -297,8 +297,7 @@ void DoAnalyze(const X64Emulator *Emulator) {
     if (insn.info.mnemonic == ZYDIS_MNEMONIC_CALL
         || insn.info.mnemonic == ZYDIS_MNEMONIC_RET
         || insn.info.mnemonic == ZYDIS_MNEMONIC_JMP && insn.operands[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE
-        || insn.text[0] == 'j' && isJcc(insn)
-    ) {
+        || insn.text[0] == 'j' && isJcc(insn)) {
         std::println("end block signature at [0x{:016X}]: {}", insn.runtime_address, insn.text);
         CleanJunkCode();
 
@@ -325,11 +324,15 @@ int main() {
     std::locale::global(std::locale("zh_CN.UTF-8"));
     REGISTER_ORDER::InitializeMaps();
 
+    RapidMemoryLoader loader;
+    for (const auto &seg: segs) {
+        loader.AppendMoreSegs(seg);
+    }
 
     X64Emulator emulator { ParseRegisterString(REGISTER_PARSER_STR) };
-    emulator.LoadSegments(segs);
+    emulator.LoadSegments(loader.GetSegMap());
     emulator.RegisterObserver(0, DoAnalyze);
-    emulator.Run();
+    emulator.Run(0);
 
 
     system("pause");

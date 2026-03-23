@@ -1,19 +1,16 @@
 //
 // Created by AFETT on 2024/9/1.
 //
-
-#ifndef RAPIDMEMORYPATCHER_H
-#define RAPIDMEMORYPATCHER_H
-
-
-#include <print>
-#include <span>
-#include <ranges>
-#include <algorithm>
+module;
 
 #include "Windows.h"
 
-class RipperMemoryPatcher {
+export module RapidMemoryPatcher;
+
+import std;
+import std.compat;
+
+export class RipperMemoryPatcher {
     struct HANDLE_DELETER {
         void operator()(const HANDLE handle) const {
             if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
@@ -115,5 +112,3 @@ public:
         }
     }
 };
-
-#endif //RAPIDMEMORYPATCHER_H

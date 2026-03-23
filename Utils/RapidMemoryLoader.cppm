@@ -1,14 +1,17 @@
 //
 // Created by AFETT on 2024/8/31.
 //
+module;
 
-#ifndef RAPIDMEMORYLOADER_H
-#define RAPIDMEMORYLOADER_H
+#include <cassert>
+
+export module RapidMemoryLoader;
+
+import std;
+import Def;
 
 
-#include "def.h"
-
-template<ReqMemLoaderable SEG_MAP_MEM_MODE = SEG_MAP_MEM>
+export template<ReqMemLoaderable SEG_MAP_MEM_MODE = SEG_MAP_MEM>
 class RapidMemoryLoader {
     std::vector<SEG_MAP_MEM_MODE> seg_map_;
 
@@ -55,6 +58,3 @@ public:
 
     ~RapidMemoryLoader() = default;
 };
-
-
-#endif //RAPIDMEMORYLOADER_H

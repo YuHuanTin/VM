@@ -1,18 +1,19 @@
 //
 // Created by AFETT on 2024/8/25.
 //
-
-#ifndef RAPID_MEMORY_DUMPER_H
-#define RAPID_MEMORY_DUMPER_H
-
-#include <utility>
+module;
 
 #include "Windows.h"
 
+export module RapidMemoryDumper;
+
+import std;
+import std.compat;
+
 /**
- * 自动 dump 程序指定范围所有内存到指定目录 
+ * 自动 dump 程序指定范围所有内存到指定目录
  */
-class RipperMemoryDumper {
+export class RipperMemoryDumper {
     struct HANDLE_DELETER {
         void operator()(const HANDLE handle) const {
             if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
@@ -29,13 +30,13 @@ public:
         hProcess_ = std::unique_ptr<DecayedHandle, HANDLE_DELETER>(OpenProcess(PROCESS_ALL_ACCESS, true, ProcessId));
 
         const std::filesystem::path storageDirectory { storageDirectory_ };
-        if (!exists(storageDirectory))
-            create_directories(storageDirectory);
-        if (!is_directory(storageDirectory))
+        if (!std::filesystem::exists(storageDirectory))
+            std::filesystem::create_directories(storageDirectory);
+        if (!std::filesystem::is_directory(storageDirectory))
             throw std::runtime_error("Not a directory");
-        if (!is_empty(storageDirectory)) {
-            remove_all(storageDirectory);
-            create_directories(storageDirectory);
+        if (!std::filesystem::is_empty(storageDirectory)) {
+            std::filesystem::remove_all(storageDirectory);
+            std::filesystem::create_directories(storageDirectory);
         }
     }
 
@@ -99,5 +100,3 @@ public:
         }
     }
 };
-
-#endif //RAPID_MEMORY_DUMPER_H
